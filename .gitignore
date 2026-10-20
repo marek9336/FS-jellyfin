@@ -22,3 +22,8 @@ secrets.*
 # Interní poznámky jen lokálně
 HANDOFF.md
 NOTES.md
+
+# Konfigurace pluginu z Jellyfinu obsahuje heslo k Fastshare — nikdy do gitu
+Jellyfin.Plugin.Fastshare.xml
+configurations/
+jftest/
