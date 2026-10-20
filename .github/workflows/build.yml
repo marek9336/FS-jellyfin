@@ -1,0 +1,150 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  PLUGIN_NAME: fastshare
+  GUID: 10e6271d-79f2-400a-b8a6-89e51a9a4273
+  TARGET_ABI: 12.0.0.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/v}"
+          else
+            V="0.0.0"
+          fi
+          # Jellyfin chce 4 čísla
+          while [[ $(echo "$V" | tr -cd '.' | wc -c) -lt 3 ]]; do V="$V.0"; done
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Version: $V"
+
+      - name: Test
+        run: dotnet test Jellyfin.Plugin.Fastshare.Tests/Jellyfin.Plugin.Fastshare.Tests.csproj
+
+      - name: Build
+        run: >
+          dotnet publish Jellyfin.Plugin.Fastshare/Jellyfin.Plugin.Fastshare.csproj
+          -c Release -o publish
+          -p:Version=${{ steps.version.outputs.version }}
+          -p:AssemblyVersion=${{ steps.version.outputs.version }}
+          -p:FileVersion=${{ steps.version.outputs.version }}
+
+      - name: Package plugin zip
+        run: |
+          mkdir -p artifacts
+          TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          cat > publish/meta.json << EOF
+          {
+            "category": "General",
+            "changelog": "",
+            "description": "Hledání na Fastshare.cloud a stahování do knihovny Jellyfinu.",
+            "guid": "${GUID}",
+            "name": "Fastshare",
+            "overview": "Fastshare pro Jellyfin",
+            "owner": "${GITHUB_REPOSITORY_OWNER}",
+            "targetAbi": "${TARGET_ABI}",
+            "timestamp": "${TS}",
+            "version": "${{ steps.version.outputs.version }}",
+            "status": "Active",
+            "autoUpdate": true,
+            "imagePath": ""
+          }
+          EOF
+          cd publish
+          zip -r "../artifacts/${PLUGIN_NAME}_${{ steps.version.outputs.version }}.zip" \
+            Jellyfin.Plugin.Fastshare.dll meta.json
+          cd ..
+          md5sum "artifacts/${PLUGIN_NAME}_${{ steps.version.outputs.version }}.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-zip
+          path: artifacts/*.zip
+
+      # ── Release + aktualizace manifest.json (jen pro tagy v*) ──
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+
+      - name: Update manifest.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ZIP="artifacts/${PLUGIN_NAME}_${VERSION}.zip"
+          CHECKSUM=$(md5sum "$ZIP" | cut -d' ' -f1)
+          TAG="${GITHUB_REF#refs/tags/}"
+          SOURCE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${PLUGIN_NAME}_${VERSION}.zip"
+          TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          python3 << PYEOF
+          import json, os
+
+          manifest_path = "manifest.json"
+          guid = os.environ["GUID"]
+
+          if os.path.exists(manifest_path):
+              with open(manifest_path) as f:
+                  manifest = json.load(f)
+          else:
+              manifest = [{
+                  "guid": guid,
+                  "name": "Fastshare",
+                  "description": "Hledání na Fastshare.cloud a stahování do knihovny Jellyfinu.",
+                  "overview": "Fastshare pro Jellyfin",
+                  "owner": os.environ["GITHUB_REPOSITORY_OWNER"],
+                  "category": "General",
+                  "imageUrl": "",
+                  "versions": []
+              }]
+
+          entry = {
+              "version": "${VERSION}",
+              "changelog": "Viz https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}",
+              "targetAbi": os.environ["TARGET_ABI"],
+              "sourceUrl": "${SOURCE_URL}",
+              "checksum": "${CHECKSUM}",
+              "timestamp": "${TS}"
+          }
+
+          plugin = manifest[0]
+          plugin["versions"] = [v for v in plugin["versions"] if v["version"] != entry["version"]]
+          plugin["versions"].insert(0, entry)
+
+          with open(manifest_path, "w") as f:
+              json.dump(manifest, f, indent=2, ensure_ascii=False)
+          PYEOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin
+          DEFAULT_BRANCH=$(git remote show origin | sed -n 's/.*HEAD branch: //p')
+          git checkout "$DEFAULT_BRANCH"
+          git add manifest.json
+          git commit -m "manifest: release ${VERSION}" || echo "Nothing to commit"
+          git push origin "$DEFAULT_BRANCH"

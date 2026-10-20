@@ -1,0 +1,12 @@
+[
+  {
+    "guid": "10e6271d-79f2-400a-b8a6-89e51a9a4273",
+    "name": "Fastshare",
+    "description": "Hledání na Fastshare.cloud a stahování do knihovny Jellyfinu.",
+    "overview": "Fastshare pro Jellyfin",
+    "owner": "marek9336",
+    "category": "General",
+    "imageUrl": "",
+    "versions": []
+  }
+]
