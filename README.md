@@ -24,6 +24,13 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   podle S01E02 / 1x02 v názvech; řadu bez označení vezme z názvu archivu („9. série"). Co nepozná,
   nechá ve skryté složce `.nerozpoznane` u seriálu. Zaheslované archivy neumí. Rozbaluje knihovnou
   SharpCompress, kterou má Jellyfin 12 sám — nic dalšího se neinstaluje.
+- **Navržené** (kontrola knihovny filmů — nic se nemaže ani nestahuje samo):
+  - *lepší verze*: film pod Full HD → najde 1080p na Fastshare, „Stáhnout" (volitelně **nahradit** —
+    stará verze se smaže až po úspěšném stažení), „Stačí" (už nenavrhovat), „Smazat film",
+  - *duplicity*: film ve víc verzích → nejlepší nechat, horší smazat, případně rovnou stáhnout Full HD,
+  - *bez metadat*: z názvu souboru vyčte skutečný název a rok, najde ho v TMDb (vlastní „Identifikovat"
+    Jellyfinu) a po potvrzení doplní plakát, herce a popis.
+  Kontrola běží na pozadí (jednou týdně, nebo tlačítkem); lepší verze se u filmu hledá znovu po 30 dnech.
 - Pojmenování podle Jellyfinu: `Filmy/Název (rok)/Název (rok) - [1080p CZ].mkv`,
   `Seriály/Název/Season 01/Název - S01E02 - [1080p CZ].mkv`; duplicity ve stejné kvalitě se nestahují.
 
@@ -56,7 +63,4 @@ Vydání: tag `vX.Y.Z` → GitHub Actions spustí testy, sestaví zip, vytvoří
 
 ## Plán
 
-- **Kontrola knihovny**: projít stávající seriály a navrhnout chybějící díly (Jellyfin je zná z TMDb),
-  s možností je rovnou zařadit.
-- **Duplicity v knihovně**: najít víc verzí téhož filmu/dílu, nechat lepší kvalitu, horší navrhnout ke smazání
-  (nic se nemaže bez potvrzení).
+- **Seriály v Navržených**: chybějící díly (Jellyfin je zná z TMDb) a lepší verze dílů pod Full HD.

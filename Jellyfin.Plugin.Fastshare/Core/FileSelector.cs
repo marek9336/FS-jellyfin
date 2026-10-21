@@ -39,6 +39,9 @@ public sealed class FileSelectorOptions
     /// <summary>SD/720p/1080p/4K, „-" = bez limitu.</summary>
     public string MaxQuality { get; set; } = "4K";
 
+    /// <summary>Nejnižší přijatelná kvalita (návrh lepší verze chce aspoň 1080p). Prázdné = bez limitu.</summary>
+    public string? MinQuality { get; set; }
+
     /// <summary>Max. velikost filmu v GB (0 = bez limitu).</summary>
     public int MaxMovieSizeGb { get; set; } = 30;
 
@@ -158,6 +161,7 @@ public static class FileSelector
     public static List<RankedFile> Rank(IEnumerable<FsFile> files, SelectTarget t, FileSelectorOptions o)
     {
         var maxLevel = QualityLevels.TryGetValue(o.MaxQuality ?? string.Empty, out var ml) ? ml : int.MaxValue;
+        var minLevel = QualityLevels.TryGetValue(o.MinQuality ?? string.Empty, out var mn) ? mn : 0;
         var maxGb = t.Kind == MediaKind.Episode ? o.MaxEpisodeSizeGb : o.MaxMovieSizeGb;
         var maxBytes = maxGb > 0 ? (long)maxGb * 1024 * 1024 * 1024 : long.MaxValue;
         var codecPrefs = (o.CodecPreference ?? string.Empty)
@@ -174,7 +178,7 @@ public static class FileSelector
             }
 
             var level = QualityLevels.TryGetValue(f.Quality ?? string.Empty, out var l) ? l : 0;
-            if (level > maxLevel || (f.SizeBytes > 0 && f.SizeBytes > maxBytes))
+            if (level > maxLevel || level < minLevel || (f.SizeBytes > 0 && f.SizeBytes > maxBytes))
             {
                 continue;
             }

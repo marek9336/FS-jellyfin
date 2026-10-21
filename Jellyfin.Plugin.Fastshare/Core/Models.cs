@@ -205,6 +205,19 @@ public class QueueItem
 
     /// <summary>Výsledek rozbalení pro GUI („24 dílů, 1 přeskočen, 2 nerozpoznané").</summary>
     public string? ArchiveResult { get; set; }
+
+    // ── Náhrada (záložka Navržené) ────────────────────────────────
+    /// <summary>
+    /// Po úspěšném stažení smazat tyhle soubory (horší verze téhož filmu). Maže se jen uvnitř
+    /// knihoven Jellyfinu a jen když nový soubor opravdu existuje.
+    /// </summary>
+    public List<string>? ReplacePaths { get; set; }
+
+    /// <summary>Ze kterého návrhu položka vznikla (po dokončení se návrh označí).</summary>
+    public string? SuggestionId { get; set; }
+
+    /// <summary>Doplňující výsledek pro GUI („nahrazeno — smazány 2 starší verze").</summary>
+    public string? ResultNote { get; set; }
 }
 
 /// <summary>Jeden soubor archivu (u vícedílného jich je víc, stahují se postupně).</summary>

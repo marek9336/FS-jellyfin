@@ -14,11 +14,26 @@ public class FsController : ControllerBase
 {
     private readonly FsState _state;
     private readonly ILogger<FsController> _logger;
+    private readonly MediaBrowser.Controller.Library.ILibraryManager _libraryManager;
 
-    public FsController(FsState state, ILogger<FsController> logger)
+    public FsController(FsState state, ILogger<FsController> logger, MediaBrowser.Controller.Library.ILibraryManager libraryManager)
     {
         _state = state;
         _logger = logger;
+        _libraryManager = libraryManager;
+    }
+
+    /// <summary>Po smazání souborů nechat Jellyfin knihovnu přenačíst (zmizí smazané položky).</summary>
+    private void QueueScan()
+    {
+        try
+        {
+            _libraryManager.QueueLibraryScan();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Fastshare: sken knihovny se nepodařilo spustit: {Msg}", ex.Message);
+        }
     }
 
     // ── Účet ──────────────────────────────────────────────────────
@@ -438,6 +453,7 @@ public class FsController : ControllerBase
             parts = i.Parts?.Count ?? 0,
             archiveSeason = i.ArchiveSeason,
             archiveResult = i.ArchiveResult,
+            resultNote = i.ResultNote,
             addedUtc = i.AddedUtc,
             completedUtc = i.CompletedUtc,
         };
@@ -554,6 +570,225 @@ public class FsController : ControllerBase
         }
 
         return Ok(new { paused = _state.Queue.WorkerPaused });
+    }
+
+    // ── Navržené (kontrola knihovny) ──────────────────────────────
+    private LibraryAdvisor Advisor => LibraryAdvisor.Instance ?? throw new InvalidOperationException("Kontrola knihovny neběží");
+
+    [HttpGet("Suggestions")]
+    public ActionResult GetSuggestions()
+    {
+        var st = Advisor.Status;
+        var last = _state.Suggestions.LastRun;
+        return Ok(new
+        {
+            status = new
+            {
+                running = st.Running,
+                done = st.Done,
+                total = st.Total,
+                phase = st.Phase,
+                lastRunUtc = st.LastRunUtc ?? last.LastRunUtc,
+                lastResult = st.LastResult ?? last.LastResult,
+            },
+            items = _state.Suggestions.GetAll()
+                .OrderBy(x => x.Status == "new" ? 0 : 1)
+                .ThenBy(x => x.Kind)
+                .ThenBy(x => x.Title, StringComparer.CurrentCulture),
+        });
+    }
+
+    public sealed class ScanRequest
+    {
+        /// <summary>Hledat lepší verze i u filmů kontrolovaných nedávno.</summary>
+        public bool Force { get; set; }
+    }
+
+    [HttpPost("Suggestions/Scan")]
+    public ActionResult Scan([FromBody] ScanRequest? r) =>
+        Ok(new { started = Advisor.Start(r?.Force == true), message = Advisor.Status.Running ? "Kontrola už běží." : "Kontrola spuštěna." });
+
+    [HttpPost("Suggestions/Stop")]
+    public ActionResult StopScan()
+    {
+        Advisor.Stop();
+        return Ok(new { success = true });
+    }
+
+    public sealed class SuggestionDownloadRequest
+    {
+        /// <summary>Po stažení smazat všechny dosavadní verze filmu.</summary>
+        public bool Replace { get; set; }
+    }
+
+    /// <summary>⬇️ Stáhnout navrženou lepší verzi (volitelně s náhradou starých).</summary>
+    [HttpPost("Suggestions/{id}/Download")]
+    public ActionResult DownloadSuggestion([FromRoute] string id, [FromBody] SuggestionDownloadRequest r)
+    {
+        var s = _state.Suggestions.Get(id);
+        if (s?.Candidate == null)
+        {
+            return NotFound(new { success = false, message = "Návrh nemá soubor ke stažení." });
+        }
+
+        var c = s.Candidate;
+        var item = new QueueItem
+        {
+            Title = s.Title,
+            Year = s.Year,
+            MediaType = MediaKind.Movie,
+            FileId = c.FileId,
+            FileName = c.FileName,
+            DownloadUrl = c.DownloadUrl,
+            SizeBytes = c.SizeBytes,
+            BytesTotal = c.SizeBytes,
+            SizeText = Dedup.FormatSize(c.SizeBytes),
+            DurationSec = c.DurationSec,
+            Quality = c.Quality,
+            Language = c.Language,
+            SuggestionId = s.Id,
+            ReplacePaths = r.Replace ? s.Versions.Select(v => v.Path).ToList() : null,
+            Overwrite = true, // starší verze ve stejné složce nesmí stažení přeskočit jako „duplicitu"
+        };
+        var outcome = _state.Queue.Add(item);
+        _state.Queue.Wake();
+        if (outcome != AddOutcome.Added)
+        {
+            return Ok(new { success = false, message = "Tenhle soubor už ve frontě je." });
+        }
+
+        _state.Suggestions.Update(id, x =>
+        {
+            x.Status = "done";
+            x.DecidedUtc = DateTime.UtcNow;
+            x.Note = r.Replace ? "Zařazeno ke stažení — staré verze se smažou, až se nová stáhne" : "Zařazeno ke stažení";
+        });
+        return Ok(new { success = true, message = r.Replace ? "Zařazeno. Staré verze se smažou až po úspěšném stažení." : "Zařazeno do fronty." });
+    }
+
+    /// <summary>🗑 Duplicita: smazat horší verze hned (nejlepší zůstane).</summary>
+    [HttpPost("Suggestions/{id}/DeleteWorse")]
+    public ActionResult DeleteWorse([FromRoute] string id)
+    {
+        var s = _state.Suggestions.Get(id);
+        if (s is not { Kind: "duplicate" } || s.DeletePaths.Count == 0)
+        {
+            return NotFound(new { success = false, message = "Není co mazat." });
+        }
+
+        var (deleted, failed) = Delete(s.DeletePaths);
+        var kept = s.Versions.Where(v => !s.DeletePaths.Contains(v.Path)).ToList();
+        _state.Suggestions.Update(id, x =>
+        {
+            x.DeletePaths = failed.Select(f => f.Path).ToList();
+            x.Versions = kept.Concat(x.Versions.Where(v => failed.Any(f => f.Path == v.Path))).ToList();
+            x.DecidedUtc = DateTime.UtcNow;
+            x.Note = $"Smazáno horších verzí: {deleted}" + (failed.Count > 0 ? "; nesmazáno: " + string.Join(", ", failed.Select(f => f.Why)) : string.Empty);
+            if (failed.Count == 0)
+            {
+                // Zbyla jedna verze: když je pod cílem a máme lepší, návrh žije dál jako „lepší verze"
+                if (x.Candidate != null)
+                {
+                    x.Kind = "upgrade";
+                    x.Id = "up:" + x.ItemId;
+                }
+                else
+                {
+                    x.Status = "done";
+                }
+            }
+        });
+        QueueScan();
+        return Ok(new { success = failed.Count == 0, message = $"Smazáno {deleted} {(deleted == 1 ? "verze" : "verzí")}." + (failed.Count > 0 ? " Něco se smazat nepovedlo." : string.Empty) });
+    }
+
+    /// <summary>🗑 Smazat celý film (dostal se do knihovny omylem). GUI se předem ptá.</summary>
+    [HttpPost("Suggestions/{id}/DeleteMovie")]
+    public ActionResult DeleteMovie([FromRoute] string id)
+    {
+        var s = _state.Suggestions.Get(id);
+        if (s == null || s.Versions.Count == 0)
+        {
+            return NotFound(new { success = false, message = "Návrh nemá soubory." });
+        }
+
+        var (deleted, failed) = Delete(s.Versions.Select(v => v.Path).ToList());
+        _state.Suggestions.Update(id, x =>
+        {
+            x.Status = failed.Count == 0 ? "done" : x.Status;
+            x.DecidedUtc = DateTime.UtcNow;
+            x.Note = $"Film smazán ({deleted} souborů)" + (failed.Count > 0 ? "; nesmazáno: " + string.Join(", ", failed.Select(f => f.Why)) : string.Empty);
+        });
+        QueueScan();
+        return Ok(new { success = failed.Count == 0, message = failed.Count == 0 ? "Film smazán." : "Něco se smazat nepovedlo." });
+    }
+
+    public sealed class DecideRequest
+    {
+        public string? Note { get; set; }
+    }
+
+    /// <summary>✋ Odmítnout (kvalita stačí / film nechci řešit). Při další kontrole se nevrátí.</summary>
+    [HttpPost("Suggestions/{id}/Reject")]
+    public ActionResult Reject([FromRoute] string id, [FromBody] DecideRequest? r)
+    {
+        _state.Suggestions.Update(id, x =>
+        {
+            x.Status = "rejected";
+            x.DecidedUtc = DateTime.UtcNow;
+            x.Note = string.IsNullOrWhiteSpace(r?.Note) ? "Odmítnuto" : r!.Note;
+        });
+        return Ok(new { success = true });
+    }
+
+    /// <summary>Film byl identifikován (GUI to udělalo přes Jellyfin Items/RemoteSearch/Apply).</summary>
+    [HttpPost("Suggestions/{id}/Identified")]
+    public ActionResult Identified([FromRoute] string id, [FromBody] DecideRequest? r)
+    {
+        _state.Suggestions.Update(id, x =>
+        {
+            x.Status = "done";
+            x.DecidedUtc = DateTime.UtcNow;
+            x.Note = string.IsNullOrWhiteSpace(r?.Note) ? "Identifikováno" : r!.Note;
+        });
+        return Ok(new { success = true });
+    }
+
+    [HttpPost("Suggestions/{id}/Reopen")]
+    public ActionResult Reopen([FromRoute] string id)
+    {
+        _state.Suggestions.Update(id, x =>
+        {
+            x.Status = "new";
+            x.Note = null;
+            x.DecidedUtc = null;
+        });
+        return Ok(new { success = true });
+    }
+
+    private (int Deleted, List<(string Path, string Why)> Failed) Delete(IReadOnlyList<string> paths)
+    {
+        var roots = Advisor.LibraryRoots();
+        var deleted = 0;
+        var failed = new List<(string, string)>();
+        foreach (var p in paths)
+        {
+            try
+            {
+                if (LibraryFiles.DeleteVideo(p, roots).Count > 0)
+                {
+                    deleted++;
+                    _logger.LogInformation("Fastshare: smazáno z knihovny {Path}", p);
+                }
+            }
+            catch (Exception ex)
+            {
+                failed.Add((p, Path.GetFileName(p) + ": " + ex.Message));
+                _logger.LogWarning("Fastshare: {Path} se nepodařilo smazat: {Msg}", p, ex.Message);
+            }
+        }
+
+        return (deleted, failed);
     }
 
     // ── Hlídač ────────────────────────────────────────────────────

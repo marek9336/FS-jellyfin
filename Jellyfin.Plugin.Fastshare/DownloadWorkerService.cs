@@ -306,6 +306,17 @@ public sealed class DownloadWorkerService : BackgroundService
             else
             {
                 await RunFileAsync(item, hash, active, cfg, dlStart, itemCt).ConfigureAwait(false);
+                ReplaceOld(item);
+            }
+
+            if (item.SuggestionId != null)
+            {
+                _state.Suggestions.Update(item.SuggestionId, s =>
+                {
+                    s.Status = "done";
+                    s.Note = "Staženo" + (item.ReplacePaths is { Count: > 0 } ? " a nahrazeno" : string.Empty)
+                        + " " + DateTime.Now.ToString("d. M. H:mm", System.Globalization.CultureInfo.InvariantCulture);
+                });
             }
 
 
@@ -572,6 +583,47 @@ public sealed class DownloadWorkerService : BackgroundService
             i.ForceNow = false;
             i.RetryAfterUtc = null;
         });
+    }
+
+    /// <summary>
+    /// Náhrada z Navržených: nová verze je stažená → smazat staré. Jen když nový soubor opravdu
+    /// existuje a není prázdný, a jen uvnitř knihoven Jellyfinu.
+    /// </summary>
+    private void ReplaceOld(QueueItem item)
+    {
+        if (item.ReplacePaths is not { Count: > 0 })
+        {
+            return;
+        }
+
+        var done = _state.Queue.GetAll().FirstOrDefault(i => i.Id == item.Id);
+        if (done is not { Status: QueueItemStatus.Done } || done.TargetPath == null
+            || !File.Exists(done.TargetPath) || new FileInfo(done.TargetPath).Length == 0)
+        {
+            return;
+        }
+
+        var roots = _libraryManager.GetVirtualFolders().SelectMany(f => f.Locations ?? Array.Empty<string>()).ToList();
+        var deleted = 0;
+        var failed = new List<string>();
+        foreach (var path in item.ReplacePaths.Where(p => !string.Equals(p, done.TargetPath, StringComparison.Ordinal)))
+        {
+            try
+            {
+                var removed = LibraryFiles.DeleteVideo(path, roots);
+                deleted += removed.Count > 0 ? 1 : 0;
+                _logger.LogInformation("Fastshare: náhrada — smazáno {Path} ({N} souborů)", path, removed.Count);
+            }
+            catch (Exception ex)
+            {
+                failed.Add(Path.GetFileName(path) + ": " + ex.Message);
+                _logger.LogWarning("Fastshare: náhrada — {Path} se nepodařilo smazat: {Msg}", path, ex.Message);
+            }
+        }
+
+        _state.Queue.Update(item.Id, i => i.ResultNote =
+            $"Nahrazeno — smazáno starších verzí: {deleted}" + (failed.Count > 0 ? "; nesmazáno: " + string.Join(", ", failed) : string.Empty));
+        _scanPending = true;
     }
 
     /// <summary>Název části na disku: bezpečný, a s původní příponou (podle ní SharpCompress pozná typ).</summary>

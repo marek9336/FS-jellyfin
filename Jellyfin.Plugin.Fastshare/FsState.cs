@@ -38,6 +38,7 @@ public sealed class FsState : IDisposable
         var dataDir = Path.Combine(applicationPaths.DataPath, "fastshare");
         Queue = new DownloadQueue(Path.Combine(dataDir, "state.json"), Log);
         Watch = new WatchStore(Path.Combine(dataDir, "watchlist.json"), Log);
+        Suggestions = new SuggestionStore(Path.Combine(dataDir, "suggestions.json"), Log);
 
         // Vlastní handler: bez správy cookies (jinak by HttpClient hlavičku Cookie
         // s přihlašovacím klíčem zahodil) a s přesměrováním na datový server.
@@ -74,6 +75,9 @@ public sealed class FsState : IDisposable
     public DownloadQueue Queue { get; }
 
     public WatchStore Watch { get; }
+
+    /// <summary>Návrhy ze záložky Navržené (lepší verze, duplicity, bez metadat).</summary>
+    public SuggestionStore Suggestions { get; }
 
     public DownloadEngine Engine { get; }
 

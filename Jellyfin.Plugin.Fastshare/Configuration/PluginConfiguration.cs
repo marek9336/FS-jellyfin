@@ -103,6 +103,16 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public bool StopAtWindowEnd { get; set; }
 
+    // ── Navržené (kontrola knihovny) ──────────────────────────────
+    /// <summary>Jak často sama projít knihovnu (dny). 0 = jen ručně tlačítkem.</summary>
+    public int SuggestIntervalDays { get; set; } = 7;
+
+    /// <summary>Cílová kvalita lepší verze. Filmy pod ní se hledají na Fastshare, 4K se nenavrhuje.</summary>
+    public string SuggestTargetQuality { get; set; } = "1080p";
+
+    /// <summary>Po kolika dnech znovu hledat lepší verzi filmu, u kterého minule nic nebylo.</summary>
+    public int SuggestRecheckDays { get; set; } = 30;
+
     // ── Hlídač ────────────────────────────────────────────────────
     public int WatchDefaultIntervalDays { get; set; } = 1;
 
