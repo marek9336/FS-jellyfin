@@ -531,6 +531,9 @@ public static class FileNameParser
             : Separators.Replace(raw, " ");
         raw = MultiSpace.Replace(raw, " ").Trim().Trim('-', '=', ' ');
 
+        // dvojitá přípona („Fontána-pre-Zuzanu-3.avi.avi") → „… avi" z konce pryč
+        raw = Regex.Replace(raw, @"\s+(avi|mkv|mp4|m4v|wmv|mpg|mpeg|divx)$", string.Empty, RegexOptions.IgnoreCase);
+
         // „2023 Spider Man Napric…": rok na začátku z názvu pryč
         raw = Regex.Replace(raw, @"^(19|20)\d{2}\s+", string.Empty).Trim('-', '=', ' ');
         if (raw.Length == 0)

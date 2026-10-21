@@ -104,7 +104,7 @@ public sealed class WatcherService : BackgroundService
         if (w.Type == "movie")
         {
             var searchTerm = w.Year is > 0 && string.IsNullOrWhiteSpace(w.SearchTerm) ? $"{term} {w.Year}" : term;
-            var files = await _state.Client.SearchAllAsync(searchTerm, cfg.ShowAdult, 2, ct).ConfigureAwait(false);
+            var files = await _state.Client.SearchAllAsync(searchTerm, cfg.ShowAdult, 2, ct, _state.SearchGate).ConfigureAwait(false);
             var t = new SelectTarget { Kind = MediaKind.Movie, Title = w.Title, Year = w.Year };
             var ranked = FileSelector.Rank(files, t, opts);
             if (ranked.Count == 0)
@@ -125,7 +125,7 @@ public sealed class WatcherService : BackgroundService
         }
 
         // ── Seriál ────────────────────────────────────────────────
-        var all = await _state.Client.SearchAllAsync(term, cfg.ShowAdult, Math.Clamp(cfg.WatchSearchPages, 1, 10), ct)
+        var all = await _state.Client.SearchAllAsync(term, cfg.ShowAdult, Math.Clamp(cfg.WatchSearchPages, 1, 10), ct, _state.SearchGate)
             .ConfigureAwait(false);
         var episodes = all
             .Where(f => f.Season != null && f.Episode != null && f.IsVideo)

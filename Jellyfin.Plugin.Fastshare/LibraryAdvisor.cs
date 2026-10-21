@@ -20,7 +20,6 @@ namespace Jellyfin.Plugin.Fastshare;
 /// </summary>
 public sealed class LibraryAdvisor : BackgroundService
 {
-    private static readonly TimeSpan SearchPause = TimeSpan.FromSeconds(2);
 
     private readonly FsState _state;
     private readonly ILibraryManager _library;
@@ -213,7 +212,8 @@ public sealed class LibraryAdvisor : BackgroundService
                 Title = item.Name,
                 Year = item.ProductionYear,
                 GuessTitle = string.IsNullOrWhiteSpace(file.Title) ? item.Name : file.Title,
-                GuessYear = file.Year ?? item.ProductionYear,
+                // rok z vložených metadat bývá nesmysl („h264_opencl 1920x808" → 1920)
+                GuessYear = file.Year ?? (item.ProductionYear is >= 1930 && item.ProductionYear <= DateTime.UtcNow.Year + 1 ? item.ProductionYear : null),
                 Versions = string.IsNullOrEmpty(item.Path) ? new() : new() { new LibraryVersion { ItemId = item.Id.ToString("N"), Path = item.Path } },
             });
         }
@@ -265,7 +265,8 @@ public sealed class LibraryAdvisor : BackgroundService
         var rejected = _state.Suggestions.GetAll().Where(s => s.Status != "new").Select(s => s.Id).ToHashSet();
 
         Status.Total = toSearch.Count;
-        Status.Phase = $"Hledám lepší verze na Fastshare ({toSearch.Count} filmů pod {target})";
+        _searchPhase = $"Hledám lepší verze na Fastshare ({toSearch.Count} filmů pod {target})";
+        Status.Phase = _searchPhase;
         var searched = 0;
         var upgrades = 0;
         var complete = true;
@@ -326,7 +327,6 @@ public sealed class LibraryAdvisor : BackgroundService
                 _state.Suggestions.Upsert(up); // průběžně — přerušená kontrola o nalezené nepřijde
             }
 
-            await Task.Delay(SearchPause, ct).ConfigureAwait(false);
         }
 
         // Neúplné hledání (výpadek) nesmí smazat dřívější návrhy lepších verzí, na které se nedostalo
@@ -340,6 +340,18 @@ public sealed class LibraryAdvisor : BackgroundService
         Status.LastRunUtc = DateTime.UtcNow;
         _state.Suggestions.SetLastRun(summary);
         _logger.LogInformation("Fastshare: kontrola knihovny hotova — {Summary}", summary);
+    }
+
+    private string? _searchPhase;
+
+    /// <summary>Stavová hláška při čekání na strop hledání: kdy další dotaz a kolik zbývá.</summary>
+    private void WaitNote(DateTime nextUtc)
+    {
+        var left = Math.Max(0, Status.Total - Status.Done);
+        var hours = left * _state.SearchGate.Interval.TotalHours;
+        Status.Phase = $"{_searchPhase} — strop {Plugin.Instance?.Configuration.AutoSearchesPerHour}/h, další hledání v "
+            + nextUtc.ToLocalTime().ToString("H:mm", CultureInfo.InvariantCulture)
+            + (hours >= 1 ? $", zbývá asi {hours:0} h" : string.Empty);
     }
 
     /// <summary>Nejlepší soubor v cílové kvalitě: hledá český název + rok, pak původní název.</summary>
@@ -357,7 +369,7 @@ public sealed class LibraryAdvisor : BackgroundService
             List<FsFile> files;
             try
             {
-                files = await _state.Client.SearchAllAsync(t.SearchTerm(), cfg.ShowAdult, 1, ct).ConfigureAwait(false);
+                files = await _state.Client.SearchAllAsync(t.SearchTerm(), cfg.ShowAdult, 1, ct, _state.SearchGate, WaitNote).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is HttpRequestException or FastshareException or System.Text.Json.JsonException)
             {
@@ -382,7 +394,6 @@ public sealed class LibraryAdvisor : BackgroundService
                 };
             }
 
-            await Task.Delay(SearchPause, ct).ConfigureAwait(false);
         }
 
         return null;

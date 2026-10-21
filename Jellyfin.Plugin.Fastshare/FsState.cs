@@ -65,6 +65,8 @@ public sealed class FsState : IDisposable
             };
         }
 
+        SearchGate = new SearchGate(() => Config.AutoSearchesPerHour);
+
         Limiter = new SpeedLimiter(() =>
         {
             var mbps = Config.SpeedLimitMbps;
@@ -80,6 +82,9 @@ public sealed class FsState : IDisposable
     public SuggestionStore Suggestions { get; }
 
     public DownloadEngine Engine { get; }
+
+    /// <summary>Strop automatických hledání za hodinu (kontrola knihovny + hlídač).</summary>
+    public SearchGate SearchGate { get; }
 
     /// <summary>Společný limit rychlosti všech souběžných stahování.</summary>
     public SpeedLimiter Limiter { get; }

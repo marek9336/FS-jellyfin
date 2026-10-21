@@ -104,6 +104,12 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool StopAtWindowEnd { get; set; }
 
     // ── Navržené (kontrola knihovny) ──────────────────────────────
+    /// <summary>
+    /// Kolik automatických hledání na Fastshare za hodinu (kontrola knihovny a hlídač dohromady),
+    /// rovnoměrně rozložených. 0 = bez stropu (nedoporučeno). Ruční hledání v GUI se nepočítá.
+    /// </summary>
+    public int AutoSearchesPerHour { get; set; } = 20;
+
     /// <summary>Jak často sama projít knihovnu (dny). 0 = jen ručně tlačítkem.</summary>
     public int SuggestIntervalDays { get; set; } = 7;
 

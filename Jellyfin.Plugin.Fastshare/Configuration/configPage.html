@@ -234,7 +234,10 @@
                         <div class="selectContainer"><select is="emby-select" id="cfgSuggestTargetQuality" label="Navrhovat lepší verzi do">
                             <option value="720p">720p</option><option value="1080p">1080p (Full HD)</option></select></div>
                         <div class="inputContainer"><input is="emby-input" type="number" id="cfgSuggestRecheckDays" label="Znovu hledat po (dní)" min="1" /></div>
+                        <div class="inputContainer"><input is="emby-input" type="number" id="cfgAutoSearchesPerHour" label="Automatických hledání za hodinu" min="0" /></div>
                     </div>
+                    <div class="fieldDescription">Strop platí pro kontrolu knihovny i hlídač dohromady (ruční hledání ne), dotazy jsou rozložené
+                        rovnoměrně. Při 20/h projde 1 000 filmů zhruba za dva dny — na pozadí, nikoho to neruší.</div>
 
                     <h2>Hlídač</h2>
                     <div class="fs-grid">
@@ -981,7 +984,7 @@
             'PreferredLang1', 'PreferredLang2', 'PreferredLang3', 'CodecPreference', 'UnknownLangAs', 'MaxQuality', 'HdrMode', 'DvMode'];
         var cfgNum = ['MinFreeSpaceGb', 'MaxParallelDownloads', 'SpeedLimitMbps', 'PauseBetweenSeconds', 'DailyCapGb', 'RetryAttempts',
             'DuplicateSizeTolerancePercent', 'WindowFromHour', 'WindowToHour', 'MaxMovieSizeGb', 'MaxEpisodeSizeGb', 'MaxBitrateMbps',
-            'WatchDefaultIntervalDays', 'WatchSearchPages', 'SuggestIntervalDays', 'SuggestRecheckDays'];
+            'WatchDefaultIntervalDays', 'WatchSearchPages', 'SuggestIntervalDays', 'SuggestRecheckDays', 'AutoSearchesPerHour'];
         var cfgBool = ['ShowAdult', 'TriggerLibraryScan', 'UseWeeklyWindow', 'StopAtWindowEnd', 'PreferSubsWhenForeign', 'SkipWithoutPreferredLang'];
 
         function renderWeek(spec) {

@@ -107,6 +107,27 @@ public sealed class LibraryTests : IDisposable
     }
 
     [Fact]
+    public async Task SearchGateSpacesQueries()
+    {
+        var gate = new SearchGate(() => 7200); // 2 za sekundu → odstup 0,5 s
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        await gate.WaitAsync(CancellationToken.None);
+        await gate.WaitAsync(CancellationToken.None);
+        await gate.WaitAsync(CancellationToken.None);
+        Assert.True(sw.Elapsed >= TimeSpan.FromSeconds(0.9), $"jen {sw.Elapsed}");
+        Assert.Equal(TimeSpan.FromSeconds(180), new SearchGate(() => 20).Interval);
+        Assert.Equal(TimeSpan.Zero, new SearchGate(() => 0).Interval);
+    }
+
+    [Fact]
+    public void DoubleExtensionNotInTitle()
+    {
+        var f = new FsFile { FileName = "Fontána-pre-Zuzanu-3.avi.avi" };
+        FileNameParser.Fill(f);
+        Assert.Equal("Fontána pre Zuzanu 3", f.Title);
+    }
+
+    [Fact]
     public void MinQualityFiltersCandidates()
     {
         var sd = new FsFile { Id = "1", FileName = "Pelisky 1999 CZ.avi", DownloadUrl = "x", SizeBytes = 700L << 20, Resolution = "608x400" };
