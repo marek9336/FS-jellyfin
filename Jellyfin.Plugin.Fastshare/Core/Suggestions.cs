@@ -52,7 +52,7 @@ public class Suggestion
 {
     public string Id { get; set; } = string.Empty;
 
-    /// <summary>"upgrade" (lepší verze), "duplicate" (víc verzí), "identify" (bez metadat).</summary>
+    /// <summary>"upgrade" (lepší verze), "duplicate" (víc verzí), "identify" (bez metadat), "episode" (díl seriálu).</summary>
     public string Kind { get; set; } = "upgrade";
 
     /// <summary>Hlavní položka filmu v Jellyfinu.</summary>
@@ -73,6 +73,18 @@ public class Suggestion
     /// <summary>Lepší verze na Fastshare (upgrade, nebo duplicita pod 1080p). null = nic nenašel.</summary>
     public SuggestedFile? Candidate { get; set; }
 
+    // ── Díl seriálu ───────────────────────────────────────────────
+    public string? SeriesId { get; set; }
+
+    public string? SeriesName { get; set; }
+
+    public int? Season { get; set; }
+
+    public int? Episode { get; set; }
+
+    /// <summary>Kvalita, na kterou se seriál sjednocuje (převažující kvalita jeho dílů).</summary>
+    public string? TargetQuality { get; set; }
+
     /// <summary>Bez metadat: co se vyčetlo z názvu souboru (název a rok pro hledání v TMDb).</summary>
     public string? GuessTitle { get; set; }
 
@@ -87,6 +99,27 @@ public class Suggestion
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
 
     public DateTime? DecidedUtc { get; set; }
+}
+
+/// <summary>Přehled seriálu: kolik dílů je v jaké kvalitě a na co se sjednocuje.</summary>
+public class SeriesSummary
+{
+    public string SeriesId { get; set; } = string.Empty;
+
+    public string Name { get; set; } = string.Empty;
+
+    public int Episodes { get; set; }
+
+    /// <summary>Kvalita → počet dílů (podle nejlepší verze dílu).</summary>
+    public Dictionary<string, int> Qualities { get; set; } = new();
+
+    /// <summary>Na co se sjednocuje: převažující kvalita, nebo ručně zvolená.</summary>
+    public string Target { get; set; } = "1080p";
+
+    public bool TargetIsManual { get; set; }
+
+    /// <summary>Dílů ve víc verzích.</summary>
+    public int MultiVersion { get; set; }
 }
 
 /// <summary>Stav kontroly knihovny pro GUI.</summary>
@@ -119,6 +152,11 @@ public class SuggestionState
 
     /// <summary>Kontrola rozběhnutá a nedokončená (restart Jellyfinu) — po startu pokračovat.</summary>
     public bool RunPending { get; set; }
+
+    /// <summary>Ručně zvolená cílová kvalita seriálu (ID seriálu → kvalita).</summary>
+    public Dictionary<string, string> SeriesTarget { get; set; } = new();
+
+    public List<SeriesSummary> Series { get; set; } = new();
 }
 
 /// <summary>Persistentní návrhy (JSON, atomický zápis jako fronta).</summary>
@@ -269,6 +307,43 @@ public sealed class SuggestionStore
             _state.RunPending = false;
             SaveLocked();
         }
+    }
+
+    public string? SeriesTarget(string seriesId)
+    {
+        lock (_lock)
+        {
+            return _state.SeriesTarget.TryGetValue(seriesId, out var q) ? q : null;
+        }
+    }
+
+    /// <summary>Ručně zvolit cílovou kvalitu seriálu (null = zase převažující). Díly se pak prohledají znovu.</summary>
+    public void SetSeriesTarget(string seriesId, string? quality, IEnumerable<string> episodeIds)
+    {
+        lock (_lock)
+        {
+            if (string.IsNullOrEmpty(quality))
+            {
+                _state.SeriesTarget.Remove(seriesId);
+            }
+            else
+            {
+                _state.SeriesTarget[seriesId] = quality;
+            }
+
+            foreach (var id in episodeIds)
+            {
+                _state.UpgradeCheckedUtc.Remove(id);
+            }
+
+            SaveLocked();
+        }
+    }
+
+    public List<SeriesSummary> Series
+    {
+        get { lock (_lock) { return _state.Series.ToList(); } }
+        set { lock (_lock) { _state.Series = value; SaveLocked(); } }
     }
 
     public bool RunPending

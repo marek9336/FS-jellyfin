@@ -591,6 +591,7 @@ public class FsController : ControllerBase
                 lastRunUtc = st.LastRunUtc ?? last.LastRunUtc,
                 lastResult = st.LastResult ?? last.LastResult,
             },
+            series = _state.Suggestions.Series,
             items = _state.Suggestions.GetAll()
                 .OrderBy(x => x.Status == "new" ? 0 : 1)
                 .ThenBy(x => x.Kind)
@@ -632,11 +633,16 @@ public class FsController : ControllerBase
         }
 
         var c = s.Candidate;
+        var episode = s.Kind == "episode";
         var item = new QueueItem
         {
             Title = s.Title,
             Year = s.Year,
-            MediaType = MediaKind.Movie,
+            MediaType = episode ? MediaKind.Episode : MediaKind.Movie,
+            SeriesTitle = episode ? s.SeriesName : null,
+            Season = episode ? s.Season : null,
+            Episode = episode ? s.Episode : null,
+            TargetDir = episode && s.Versions.Count > 0 ? Path.GetDirectoryName(s.Versions[0].Path) : null,
             FileId = c.FileId,
             FileName = c.FileName,
             DownloadUrl = c.DownloadUrl,
@@ -666,28 +672,59 @@ public class FsController : ControllerBase
         return Ok(new { success = true, message = r.Replace ? "Zařazeno. Staré verze se smažou až po úspěšném stažení." : "Zařazeno do fronty." });
     }
 
-    /// <summary>🗑 Duplicita: smazat horší verze hned (nejlepší zůstane).</summary>
-    [HttpPost("Suggestions/{id}/DeleteWorse")]
-    public ActionResult DeleteWorse([FromRoute] string id)
+    public sealed class DeleteVersionsRequest
+    {
+        /// <summary>Které verze smazat (cesty z návrhu). Aspoň jedna musí zůstat.</summary>
+        public List<string> Paths { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 🗑 Smazat vybrané verze filmu nebo dílu (u Harryho Pottera třeba jen SD, 4K a Full HD nechat).
+    /// Nikdy nesmaže všechny — aspoň jedna verze musí zůstat.
+    /// </summary>
+    [HttpPost("Suggestions/{id}/DeleteVersions")]
+    public ActionResult DeleteVersions([FromRoute] string id, [FromBody] DeleteVersionsRequest r)
     {
         var s = _state.Suggestions.Get(id);
-        if (s is not { Kind: "duplicate" } || s.DeletePaths.Count == 0)
+        if (s == null)
         {
-            return NotFound(new { success = false, message = "Není co mazat." });
+            return NotFound(new { success = false, message = "Návrh neexistuje." });
         }
 
-        var (deleted, failed) = Delete(s.DeletePaths);
-        var kept = s.Versions.Where(v => !s.DeletePaths.Contains(v.Path)).ToList();
+        var known = s.Versions.Select(v => v.Path).ToHashSet(StringComparer.Ordinal);
+        var paths = r.Paths.Where(known.Contains).Distinct(StringComparer.Ordinal).ToList();
+        if (paths.Count == 0)
+        {
+            return BadRequest(new { success = false, message = "Vyber, kterou verzi smazat." });
+        }
+
+        if (paths.Count >= s.Versions.Count)
+        {
+            return BadRequest(new { success = false, message = "Aspoň jedna verze musí zůstat (celý film smaže „Smazat film“)." });
+        }
+
+        var (deleted, failed) = Delete(paths);
+        var gone = paths.Where(p => failed.All(f => f.Path != p)).ToHashSet(StringComparer.Ordinal);
         _state.Suggestions.Update(id, x =>
         {
-            x.DeletePaths = failed.Select(f => f.Path).ToList();
-            x.Versions = kept.Concat(x.Versions.Where(v => failed.Any(f => f.Path == v.Path))).ToList();
+            x.Versions = x.Versions.Where(v => !gone.Contains(v.Path)).ToList();
+            x.DeletePaths = x.Versions.Skip(1).Select(v => v.Path).ToList();
             x.DecidedUtc = DateTime.UtcNow;
-            x.Note = $"Smazáno horších verzí: {deleted}" + (failed.Count > 0 ? "; nesmazáno: " + string.Join(", ", failed.Select(f => f.Why)) : string.Empty);
-            if (failed.Count == 0)
+            x.Note = $"Smazáno verzí: {deleted}" + (failed.Count > 0 ? "; nesmazáno: " + string.Join(", ", failed.Select(f => f.Why)) : string.Empty);
+            if (x.Versions.Count > 1)
             {
-                // Zbyla jedna verze: když je pod cílem a máme lepší, návrh žije dál jako „lepší verze"
-                if (x.Candidate != null)
+                // Nechal sis víc verzí schválně (Harry Potter: 4K + Full HD) — rozhodnuto, znovu nenabízet
+                x.Status = "done";
+                x.Note += $"; ponecháno {x.Versions.Count} verzí";
+                return;
+            }
+
+            // Zbyla jedna verze. Pod cílem s nalezenou lepší → žije dál jako „lepší verze", jinak vyřízeno.
+            var target = x.TargetQuality ?? Plugin.Instance?.Configuration.SuggestTargetQuality ?? "1080p";
+            var below = LibraryFiles.Level(x.Versions[0].Quality) < LibraryFiles.Level(target);
+            if (x.Kind == "duplicate")
+            {
+                if (below && x.Candidate != null)
                 {
                     x.Kind = "upgrade";
                     x.Id = "up:" + x.ItemId;
@@ -697,9 +734,78 @@ public class FsController : ControllerBase
                     x.Status = "done";
                 }
             }
+            else if (x.Kind == "episode" && !below)
+            {
+                x.Status = "done";
+            }
         });
         QueueScan();
         return Ok(new { success = failed.Count == 0, message = $"Smazáno {deleted} {(deleted == 1 ? "verze" : "verzí")}." + (failed.Count > 0 ? " Něco se smazat nepovedlo." : string.Empty) });
+    }
+
+    // ── Seriály ───────────────────────────────────────────────────
+    public sealed class SeriesBulkRequest
+    {
+        public bool Replace { get; set; } = true;
+    }
+
+    /// <summary>⬇️ U seriálu zařadit všechny nalezené lepší verze dílů.</summary>
+    [HttpPost("Suggestions/Series/{seriesId}/DownloadAll")]
+    public ActionResult SeriesDownloadAll([FromRoute] string seriesId, [FromBody] SeriesBulkRequest r)
+    {
+        var list = _state.Suggestions.GetAll().Where(x => x.Kind == "episode" && x.Status == "new" && x.SeriesId == seriesId && x.Candidate != null).ToList();
+        var n = 0;
+        foreach (var x in list)
+        {
+            if (DownloadSuggestion(x.Id, new SuggestionDownloadRequest { Replace = r.Replace }) is OkObjectResult)
+            {
+                n++;
+            }
+        }
+
+        _state.Queue.GroupSeries();
+        return Ok(new { success = n > 0, message = $"Zařazeno {n} dílů" + (r.Replace ? " (staré verze se smažou po stažení)." : ".") });
+    }
+
+    /// <summary>✋ Odmítnout všechny návrhy dílů seriálu (kvalita stačí).</summary>
+    [HttpPost("Suggestions/Series/{seriesId}/Reject")]
+    public ActionResult SeriesReject([FromRoute] string seriesId)
+    {
+        var list = _state.Suggestions.GetAll().Where(x => x.Kind == "episode" && x.Status == "new" && x.SeriesId == seriesId).ToList();
+        foreach (var x in list)
+        {
+            _state.Suggestions.Update(x.Id, y =>
+            {
+                y.Status = "rejected";
+                y.DecidedUtc = DateTime.UtcNow;
+                y.Note = "Odmítnuto celým seriálem";
+            });
+        }
+
+        return Ok(new { success = true, message = $"Odmítnuto {list.Count} dílů." });
+    }
+
+    public sealed class SeriesTargetRequest
+    {
+        /// <summary>SD/720p/1080p, prázdné = převažující kvalita.</summary>
+        public string? Quality { get; set; }
+    }
+
+    /// <summary>Ručně zvolit, na jakou kvalitu se seriál sjednocuje. Projeví se další kontrolou (spustí se hned).</summary>
+    [HttpPost("Suggestions/Series/{seriesId}/Target")]
+    public ActionResult SeriesTarget([FromRoute] string seriesId, [FromBody] SeriesTargetRequest r)
+    {
+        var q = string.IsNullOrWhiteSpace(r.Quality) ? null : r.Quality;
+        if (q != null && !FileSelector.QualityLevels.ContainsKey(q))
+        {
+            return BadRequest(new { success = false, message = "Neznámá kvalita." });
+        }
+
+        var episodes = _state.Suggestions.GetAll().Where(x => x.Kind == "episode" && x.SeriesId == seriesId).Select(x => x.ItemId);
+        _state.Suggestions.SetSeriesTarget(seriesId, q, episodes);
+        var started = Advisor.Start(false);
+        return Ok(new { success = true, message = (q == null ? "Zpět na převažující kvalitu." : $"Sjednotit na {q}.")
+            + (started ? " Kontrola spuštěna." : " Projeví se, až doběhne právě běžící kontrola.") });
     }
 
     /// <summary>🗑 Smazat celý film (dostal se do knihovny omylem). GUI se předem ptá.</summary>

@@ -398,6 +398,11 @@ public sealed class DownloadWorkerService : BackgroundService
     {
         var extension = string.IsNullOrEmpty(Path.GetExtension(item.FileName)) ? ".mkv" : Path.GetExtension(item.FileName).ToLowerInvariant();
         var finalPath = MediaOrganizer.BuildTargetPath(cfg.MoviesPath, cfg.SeriesPath, item, extension);
+        if (!string.IsNullOrEmpty(item.TargetDir))
+        {
+            finalPath = Path.Combine(item.TargetDir, Path.GetFileName(finalPath));
+        }
+
         if (!item.Overwrite)
         {
             finalPath = MediaOrganizer.EnsureUniquePath(finalPath);

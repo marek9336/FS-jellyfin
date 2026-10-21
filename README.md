@@ -30,7 +30,13 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   - *duplicity*: film ve víc verzích → nejlepší nechat, horší smazat, případně rovnou stáhnout Full HD,
   - *bez metadat*: z názvu souboru vyčte skutečný název a rok, najde ho v TMDb (vlastní „Identifikovat"
     Jellyfinu) a po potvrzení doplní plakát, herce a popis.
-  Kontrola běží na pozadí (jednou týdně, nebo tlačítkem); lepší verze se u filmu hledá znovu po 30 dnech.
+  - *seriály*: po seriálech — přehled kvalit dílů, cíl = převažující kvalita (nebo ručně „sjednotit na…"),
+    díly pod cílem s nalezenou lepší verzí (hromadně „Stáhnout všech", nová verze jde do složky seriálu),
+    díly ve víc verzích,
+  - u víc verzí se zaškrtne, které smazat (Harry Potter: smazat SD, nechat 4K i Full HD),
+  - řazení: nalezená lepší verze první, od nejhorší / nejlepší kvality, velikost, název.
+  Kontrola běží na pozadí (jednou týdně, nebo tlačítkem), automatická hledání mají strop (výchozí 20/h);
+  lepší verze se u položky hledá znovu po 30 dnech, po restartu Jellyfinu kontrola pokračuje.
 - Pojmenování podle Jellyfinu: `Filmy/Název (rok)/Název (rok) - [1080p CZ].mkv`,
   `Seriály/Název/Season 01/Název - S01E02 - [1080p CZ].mkv`; duplicity ve stejné kvalitě se nestahují.
 
@@ -63,4 +69,4 @@ Vydání: tag `vX.Y.Z` → GitHub Actions spustí testy, sestaví zip, vytvoří
 
 ## Plán
 
-- **Seriály v Navržených**: chybějící díly (Jellyfin je zná z TMDb) a lepší verze dílů pod Full HD.
+- **Chybějící díly seriálů** (Jellyfin je zná z TMDb) v Navržených.

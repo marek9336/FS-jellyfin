@@ -159,7 +159,20 @@
                         Lepší verze se hledají jen do Full HD (4K si stahuješ ručně).
                     </div>
                 </div>
-                <div style="display:flex; gap:.4em; flex-wrap:wrap; margin-bottom:.8em;" id="fsSugFilters"></div>
+                <div style="display:flex; gap:.4em; flex-wrap:wrap; margin-bottom:.6em;" id="fsSugFilters"></div>
+                <div style="display:flex; gap:1em; flex-wrap:wrap; align-items:center; margin-bottom:.8em;">
+                    <div class="selectContainer" style="width:260px; margin:0;">
+                        <select is="emby-select" id="fsSugSort" label="Řadit">
+                            <option value="candidate">nalezená lepší verze první</option>
+                            <option value="worst">od nejhorší kvality</option>
+                            <option value="best">od nejlepší kvality</option>
+                            <option value="size">od největšího souboru</option>
+                            <option value="title">podle názvu</option>
+                        </select>
+                    </div>
+                    <label class="checkboxContainer" style="margin:0;"><input is="emby-checkbox" type="checkbox" id="fsSugOnlyCand" /><span>Jen s nalezenou lepší verzí</span></label>
+                    <button is="emby-button" type="button" id="fsSugRefresh" class="raised fs-btn hide"><span>↻ Obnovit seznam (přibyly návrhy)</span></button>
+                </div>
                 <div id="fsSugList"></div>
             </div>
 
@@ -338,7 +351,7 @@
             });
             if (tabId === 'fsTabQueue') { refreshQueue(); startQueueTimer(); } else { stopQueueTimer(); }
             if (tabId === 'fsTabWatch') { renderWatch(); }
-            if (tabId === 'fsTabSuggest') { loadSuggest(); startSugTimer(); } else { stopSugTimer(); }
+            if (tabId === 'fsTabSuggest') { loadSuggest(false); startSugTimer(); } else { stopSugTimer(); }
         }
 
         function startQueueTimer() { stopQueueTimer(); queueTimer = setInterval(refreshQueue, 3000); }
@@ -817,27 +830,41 @@
         }
 
         // ── Navržené ─────────────────────────────────────────────
-        var sugTimer = null, sugData = null, sugFilter = 'upgrade';
-        var KIND = { upgrade: '⬆️ Lepší verze', duplicate: '👯 Duplicity', identify: '🏷 Bez metadat', decided: '✔ Vyřízené' };
+        // Seznam se překresluje JEN po akci uživatele (filtr, řazení, tlačítko) — časovač obnovuje
+        // jen stav kontroly a počty, jinak by přepsal rozepsaný název u „Bez metadat".
+        var sugTimer = null, sugData = null, sugFilter = 'upgrade', sugSig = '', openSeries = {};
+        var KIND = { upgrade: '⬆️ Lepší verze', duplicate: '👯 Duplicity', series: '📺 Seriály', identify: '🏷 Bez metadat', decided: '✔ Vyřízené' };
 
-        function startSugTimer() { stopSugTimer(); sugTimer = setInterval(function () { if (sugData && sugData.status.running) loadSuggest(); }, 4000); }
+        function startSugTimer() { stopSugTimer(); sugTimer = setInterval(function () { loadSuggest(true); }, 5000); }
 
         function stopSugTimer() { if (sugTimer) { clearInterval(sugTimer); sugTimer = null; } }
 
-        function loadSuggest() {
-            api('GET', 'Suggestions').then(function (d) { sugData = d; renderSuggest(); }, function () {
-                el('fsSugStatus').textContent = '❌ Návrhy se nepodařilo načíst.';
-            });
+        function signature(d) { return d.items.map(function (x) { return x.Id + x.Status + (x.Candidate ? 1 : 0) + x.Versions.length; }).join('|'); }
+
+        function loadSuggest(fromTimer) {
+            api('GET', 'Suggestions').then(function (d) {
+                var sig = signature(d);
+                sugData = d;
+                renderSugStatus();
+                if (!fromTimer) { sugSig = sig; renderSugList(); }
+                else if (sig !== sugSig) { el('fsSugRefresh').classList.remove('hide'); }
+            }, function () { el('fsSugStatus').textContent = '❌ Návrhy se nepodařilo načíst.'; });
         }
 
-        function verLine(v, mark) {
+        function qLevel(q) { return QLEVEL[q] || 0; }
+
+        function verRow(x, v, i, selectable) {
             var res = v.Width ? v.Width + '×' + v.Height : 'rozlišení ?';
-            return '<div class="fs-sub">' + (mark || '') + ' <span class="fs-badge fs-b-q">' + esc(v.Quality || '?') + '</span>'
+            var check = selectable
+                ? '<label style="display:inline-flex; align-items:center; gap:.25em; margin-right:.4em;" title="Zaškrtnuté verze se smažou">'
+                    + '<input type="checkbox" class="s-del" data-path="' + esc(v.Path) + '"' + (i > 0 ? ' checked' : '') + '> smazat</label>'
+                : (i === 0 ? '' : '');
+            return '<div class="fs-sub">' + check + (i === 0 ? '⭐ ' : '') + '<span class="fs-badge fs-b-q">' + esc(v.Quality || '?') + '</span>'
                 + '<span class="fs-badge">' + res + '</span><span class="fs-badge">' + fmtBytes(v.SizeBytes) + '</span> ' + esc(v.Path) + '</div>';
         }
 
         function candLine(c) {
-            if (!c) return '<div class="fs-sub">🔍 Lepší verze na Fastshare nenalezena.</div>';
+            if (!c) return '<div class="fs-sub">🔍 Lepší verze na Fastshare zatím nenalezena.</div>';
             return '<div class="fs-sub" style="opacity:1;">➡️ <strong>' + esc(c.FileName) + '</strong><br>'
                 + '<span class="fs-badge fs-b-q">' + esc(c.Quality || '?') + '</span>'
                 + (c.Language ? '<span class="fs-badge fs-b-cz">' + esc(c.Language) + '</span>' : '<span class="fs-badge fs-b-unk">jazyk neuveden</span>')
@@ -845,71 +872,153 @@
                 + (c.DurationSec ? '<span class="fs-badge">' + fmtDuration(c.DurationSec) + '</span>' : '') + '</div>';
         }
 
-        function renderSuggest() {
+        function renderSugStatus() {
             var st = sugData.status;
-            var txt = st.running
+            el('fsSugStatus').innerHTML = st.running
                 ? '⏳ ' + esc(st.phase || 'Kontroluji…') + (st.total ? ' — ' + st.done + ' z ' + st.total : '')
                 : (st.lastRunUtc ? 'Naposledy ' + fmtLocal(st.lastRunUtc) + ': ' + esc(st.lastResult || '') : 'Knihovna zatím nebyla kontrolována.');
-            el('fsSugStatus').innerHTML = txt;
             el('fsSugBarWrap').classList.toggle('hide', !st.running || !st.total);
             if (st.total) el('fsSugBar').style.width = Math.floor(st.done * 100 / st.total) + '%';
             el('fsSugStop').classList.toggle('hide', !st.running);
             el('fsSugScan').disabled = st.running;
             el('fsSugScanAll').disabled = st.running;
-
-            var counts = { upgrade: 0, duplicate: 0, identify: 0, decided: 0 };
-            sugData.items.forEach(function (x) { if (x.Status === 'new') counts[x.Kind]++; else counts.decided++; });
+            var counts = { upgrade: 0, duplicate: 0, series: 0, identify: 0, decided: 0 };
+            sugData.items.forEach(function (x) {
+                if (x.Status !== 'new') counts.decided++;
+                else if (x.Kind === 'episode') counts.series++;
+                else counts[x.Kind]++;
+            });
             el('fsSugFilters').innerHTML = Object.keys(KIND).map(function (k) {
                 return '<button is="emby-button" type="button" class="raised fs-btn fs-sug-f' + (k === sugFilter ? ' button-submit' : '') + '" data-k="' + k + '">'
-                    + KIND[k] + ' (' + counts[k] + ')</button>';
+                    + KIND[k] + ' (' + counts[k] + (k === 'series' ? ' dílů' : '') + ')</button>';
             }).join('');
             el('fsSugFilters').querySelectorAll('.fs-sug-f').forEach(function (b) {
-                b.addEventListener('click', function () { sugFilter = b.getAttribute('data-k'); renderSuggest(); });
+                b.addEventListener('click', function () { sugFilter = b.getAttribute('data-k'); renderSugStatus(); renderSugList(); });
             });
+        }
 
-            var list = sugData.items.filter(function (x) {
-                return sugFilter === 'decided' ? x.Status !== 'new' : (x.Status === 'new' && x.Kind === sugFilter);
+        function sortItems(list) {
+            var mode = el('fsSugSort').value;
+            function bestQ(x) { return x.Versions.length ? qLevel(x.Versions[0].Quality) * 100000 + (x.Versions[0].Height || 0) : 0; }
+            function size(x) { return x.Versions.reduce(function (n, v) { return n + (v.SizeBytes || 0); }, 0); }
+            return list.slice().sort(function (a, b) {
+                if (mode === 'candidate') return ((b.Candidate ? 1 : 0) - (a.Candidate ? 1 : 0)) || (bestQ(a) - bestQ(b)) || a.Title.localeCompare(b.Title, 'cs');
+                if (mode === 'worst') return (bestQ(a) - bestQ(b)) || a.Title.localeCompare(b.Title, 'cs');
+                if (mode === 'best') return (bestQ(b) - bestQ(a)) || a.Title.localeCompare(b.Title, 'cs');
+                if (mode === 'size') return size(b) - size(a);
+                return a.Title.localeCompare(b.Title, 'cs') || ((a.Season || 0) - (b.Season || 0)) || ((a.Episode || 0) - (b.Episode || 0));
             });
-            var html = '';
-            list.slice(0, 300).forEach(function (x) {
-                var head = '<div class="fs-name">' + esc(x.Title) + (x.Year ? ' (' + x.Year + ')' : '')
-                    + (x.OriginalTitle && x.OriginalTitle !== x.Title ? ' <span style="opacity:.6; font-weight:normal;">· ' + esc(x.OriginalTitle) + '</span>' : '') + '</div>';
-                var body = '', actions = '';
-                if (x.Status !== 'new') {
-                    body = '<div class="fs-sub">' + esc(KIND[x.Kind] || x.Kind) + ' · ' + esc(x.Note || x.Status) + '</div>';
-                    actions = '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reopen" title="Vrátit mezi návrhy">↩</button>';
-                } else if (x.Kind === 'upgrade') {
-                    body = x.Versions.map(function (v) { return verLine(v, 'Teď:'); }).join('') + candLine(x.Candidate);
-                    actions = '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;" title="Po úspěšném stažení smazat dosavadní verzi"><input type="checkbox" class="s-replace" checked> nahradit</label>'
-                        + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="download">⬇️ Stáhnout</button>'
-                        + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="Kvalita mi stačí — nenavrhovat">✋ Stačí</button>'
-                        + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Film do knihovny nepatří — smazat">🗑 Smazat film</button>';
-                } else if (x.Kind === 'duplicate') {
-                    body = x.Versions.map(function (v) {
-                        return verLine(v, x.DeletePaths.indexOf(v.Path) >= 0 ? '🗑 smazat:' : '✅ nechat:');
-                    }).join('') + candLine(x.Candidate);
-                    actions = '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="deleteWorse">🗑 Smazat horší</button>'
-                        + (x.Candidate ? '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;" title="Po stažení smazat všechny dosavadní verze"><input type="checkbox" class="s-replace" checked> nahradit vše</label>'
-                            + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="download">⬇️ Stáhnout ' + esc(x.Candidate.quality || '') + '</button>' : '')
-                        + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="Nechat obě verze">✋ Nechat</button>';
-                } else {
-                    body = (x.Versions[0] ? '<div class="fs-sub">📄 ' + esc(x.Versions[0].Path) + '</div>' : '')
-                        + '<div class="fs-form s-idform" style="background:none; padding:0;">'
-                        + '<div class="inputContainer" style="flex:1; min-width:200px;"><input is="emby-input" type="text" class="s-name" label="Název" value="' + esc(x.GuessTitle || x.Title) + '"></div>'
-                        + '<div class="inputContainer" style="width:90px;"><input is="emby-input" type="number" class="s-year" label="Rok" value="' + (x.GuessYear || '') + '"></div>'
-                        + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="find">🔎 Najít</button></div>'
-                        + '<div class="s-results"></div>';
-                    actions = '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="Nechat, jak je">✋ Nechat</button>'
-                        + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Soubor do knihovny nepatří — smazat">🗑</button>';
+        }
+
+        function itemHtml(x) {
+            var head = '<div class="fs-name">' + (x.Kind === 'episode' ? esc(x.SeriesName || x.Title) + ' ' + epTag(x.Season || 0, x.Episode || 0) : esc(x.Title) + (x.Year ? ' (' + x.Year + ')' : ''))
+                + (x.OriginalTitle && x.OriginalTitle !== x.Title ? ' <span style="opacity:.6; font-weight:normal;">· ' + esc(x.OriginalTitle) + '</span>' : '')
+                + (x.Kind === 'episode' && x.TargetQuality ? ' <span style="opacity:.6; font-weight:normal;">· cíl ' + esc(x.TargetQuality) + '</span>' : '') + '</div>';
+            var body = '', actions = '';
+            var multi = x.Versions.length > 1;
+            if (x.Status !== 'new') {
+                body = '<div class="fs-sub">' + esc(KIND[x.Kind] || (x.Kind === 'episode' ? 'Díl seriálu' : x.Kind)) + ' · ' + esc(x.Note || x.Status) + '</div>';
+                actions = '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reopen" title="Vrátit mezi návrhy">↩</button>';
+            } else if (x.Kind === 'identify') {
+                body = (x.Versions[0] ? '<div class="fs-sub">📄 ' + esc(x.Versions[0].Path) + '</div>' : '')
+                    + '<div class="fs-form" style="background:none; padding:0;">'
+                    + '<div class="inputContainer" style="flex:1; min-width:200px;"><input is="emby-input" type="text" class="s-name" label="Název" value="' + esc(x.GuessTitle || x.Title) + '"></div>'
+                    + '<div class="inputContainer" style="width:90px;"><input is="emby-input" type="number" class="s-year" label="Rok" value="' + (x.GuessYear || '') + '"></div>'
+                    + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="find">🔎 Najít</button></div>'
+                    + '<div class="s-results"></div>';
+                actions = '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="Nechat, jak je">✋ Nechat</button>'
+                    + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Soubor do knihovny nepatří — smazat">🗑</button>';
+            } else {
+                body = x.Versions.map(function (v, i) { return verRow(x, v, i, multi); }).join('');
+                var tgt = x.TargetQuality || (cfgCache && cfgCache.SuggestTargetQuality) || '1080p';
+                if (x.Candidate || (x.Versions[0] && qLevel(x.Versions[0].Quality) < qLevel(tgt))) body += candLine(x.Candidate);
+                if (multi) actions += '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="deleteVersions" title="Smaže zaškrtnuté verze, ostatní zůstanou">🗑 Smazat označené</button>';
+                if (x.Candidate) {
+                    actions += '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;" title="Po úspěšném stažení smazat všechny dosavadní verze"><input type="checkbox" class="s-replace" checked> nahradit</label>'
+                        + '<button is="emby-button" type="button" class="raised' + (multi ? '' : ' button-submit') + ' fs-btn s-act" data-act="download">⬇️ Stáhnout ' + esc(x.Candidate.Quality || '') + '</button>';
                 }
-                html += '<div class="fs-row" data-id="' + esc(x.Id) + '"><div class="fs-main">' + head + body + '<div class="s-msg fs-msg"></div></div>'
-                    + '<div style="display:flex; gap:.3em; flex-wrap:wrap; align-items:center;">' + actions + '</div></div>';
-            });
-            if (list.length > 300) html += '<div class="fs-msg">Zobrazeno prvních 300 z ' + list.length + '.</div>';
-            el('fsSugList').innerHTML = html || '<div class="fs-msg" style="opacity:.6;">Nic tu není.</div>';
+                actions += '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="' + (multi ? 'Nechat všechny verze' : 'Kvalita mi stačí — nenavrhovat') + '">✋ ' + (multi ? 'Nechat' : 'Stačí') + '</button>';
+                if (x.Kind !== 'episode') actions += '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Film do knihovny nepatří — smazat">🗑 Smazat film</button>';
+            }
+            return '<div class="fs-row" data-id="' + esc(x.Id) + '"><div class="fs-main">' + head + body + '<div class="s-msg fs-msg"></div></div>'
+                + '<div style="display:flex; gap:.3em; flex-wrap:wrap; align-items:center;">' + actions + '</div></div>';
+        }
+
+        function seriesHtml(sum, eps) {
+            var qs = Object.keys(sum.Qualities || {}).sort(function (a, b) { return qLevel(b) - qLevel(a); })
+                .map(function (q) { return '<span class="fs-badge' + (q === sum.Target ? ' fs-b-q' : '') + '">' + esc(q) + ' ' + sum.Qualities[q] + '×</span>'; }).join('');
+            var withC = eps.filter(function (e) { return e.Candidate; }).length;
+            var opts = ['', 'SD', '720p', '1080p'].map(function (q) {
+                return '<option value="' + q + '"' + ((sum.TargetIsManual ? sum.Target : '') === q ? ' selected' : '') + '>'
+                    + (q ? 'sjednotit na ' + q : 'převažující (' + (sum.TargetIsManual ? '?' : sum.Target) + ')') + '</option>';
+            }).join('');
+            return '<details class="fs-card fs-series" data-sid="' + esc(sum.SeriesId) + '"' + (openSeries[sum.SeriesId] ? ' open' : '') + ' style="padding:.6em .8em;">'
+                + '<summary style="cursor:pointer;"><strong>📺 ' + esc(sum.Name) + '</strong> · ' + sum.Episodes + ' dílů ' + qs
+                + ' · <strong>' + eps.length + ' k vyřízení</strong>' + (withC ? ', ' + withC + ' s nalezenou lepší verzí' : '')
+                + (sum.MultiVersion ? ', ' + sum.MultiVersion + ' ve víc verzích' : '') + '</summary>'
+                + '<div style="display:flex; gap:.5em; flex-wrap:wrap; align-items:center; margin:.6em 0;">'
+                + '<select class="s-target" style="background:#111; color:inherit; border:1px solid #444; border-radius:4px; padding:.3em;" title="Na jakou kvalitu díly sjednotit">' + opts + '</select>'
+                + (withC ? '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;"><input type="checkbox" class="s-sreplace" checked> nahradit</label>'
+                    + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="downloadAll">⬇️ Stáhnout všech ' + withC + '</button>' : '')
+                + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="rejectAll" title="Kvalita seriálu stačí — nenavrhovat jeho díly">✋ Celý seriál nechat</button>'
+                + '</div>' + eps.map(itemHtml).join('') + '</details>';
+        }
+
+        function renderSugList() {
+            el('fsSugRefresh').classList.add('hide');
+            var onlyC = el('fsSugOnlyCand').checked;
+            var html = '';
+            if (sugFilter === 'series') {
+                var byS = {};
+                sugData.items.forEach(function (x) { if (x.Kind === 'episode' && x.Status === 'new' && (!onlyC || x.Candidate)) (byS[x.SeriesId] = byS[x.SeriesId] || []).push(x); });
+                var sums = (sugData.series || []).filter(function (s) { return byS[s.SeriesId]; });
+                var mode = el('fsSugSort').value;
+                sums.sort(function (a, b) {
+                    if (mode === 'title') return a.Name.localeCompare(b.Name, 'cs');
+                    if (mode === 'candidate') return byS[b.SeriesId].filter(function (e) { return e.Candidate; }).length - byS[a.SeriesId].filter(function (e) { return e.Candidate; }).length;
+                    return byS[b.SeriesId].length - byS[a.SeriesId].length;
+                });
+                sums.forEach(function (sum) {
+                    var eps = byS[sum.SeriesId].sort(function (a, b) { return ((a.Season || 0) - (b.Season || 0)) || ((a.Episode || 0) - (b.Episode || 0)); });
+                    html += seriesHtml(sum, eps);
+                });
+                if (!html) html = '<div class="fs-msg" style="opacity:.6;">Žádný seriál k vyřízení — díly mají jednotnou kvalitu.</div>';
+            } else {
+                var list = sugData.items.filter(function (x) {
+                    if (sugFilter === 'decided') return x.Status !== 'new';
+                    return x.Status === 'new' && x.Kind === sugFilter && (!onlyC || x.Candidate);
+                });
+                list = sortItems(list);
+                list.slice(0, 300).forEach(function (x) { html += itemHtml(x); });
+                if (list.length > 300) html += '<div class="fs-msg">Zobrazeno prvních 300 z ' + list.length + '.</div>';
+                if (!html) html = '<div class="fs-msg" style="opacity:.6;">Nic tu není.</div>';
+            }
+            el('fsSugList').innerHTML = html;
             el('fsSugList').querySelectorAll('.s-act').forEach(function (btn) {
                 btn.addEventListener('click', function () { sugAction(btn.closest('.fs-row'), btn.getAttribute('data-act')); });
             });
+            el('fsSugList').querySelectorAll('details.fs-series').forEach(function (d) {
+                d.addEventListener('toggle', function () { openSeries[d.getAttribute('data-sid')] = d.open; });
+                var sid = d.getAttribute('data-sid');
+                d.querySelectorAll('.s-series').forEach(function (b) {
+                    b.addEventListener('click', function () { seriesAction(d, sid, b.getAttribute('data-act')); });
+                });
+                d.querySelector('.s-target').addEventListener('change', function (e) {
+                    api('POST', 'Suggestions/Series/' + sid + '/Target', { Quality: e.target.value }).then(function (r) {
+                        Dashboard.alert(r.message); loadSuggest(false);
+                    });
+                });
+            });
+        }
+
+        function seriesAction(d, sid, act) {
+            if (act === 'downloadAll') {
+                var repl = d.querySelector('.s-sreplace');
+                api('POST', 'Suggestions/Series/' + sid + '/DownloadAll', { Replace: !!(repl && repl.checked) }).then(function (r) { Dashboard.alert(r.message); loadSuggest(false); });
+            } else if (act === 'rejectAll') {
+                if (!confirm('Nenavrhovat žádný díl tohoto seriálu?')) return;
+                api('POST', 'Suggestions/Series/' + sid + '/Reject').then(function () { loadSuggest(false); });
+            }
         }
 
         function sugAction(row, act) {
@@ -917,7 +1026,7 @@
             var x = sugData.items.filter(function (i) { return i.Id === id; })[0];
             var msg = row.querySelector('.s-msg');
             var enc = encodeURIComponent(id);
-            function done(r) { msg.textContent = (r && r.success === false ? '⚠️ ' : '✅ ') + ((r && r.message) || 'Hotovo'); setTimeout(loadSuggest, 1200); }
+            function done(r) { msg.textContent = (r && r.success === false ? '⚠️ ' : '✅ ') + ((r && r.message) || 'Hotovo'); setTimeout(function () { loadSuggest(false); }, 1200); }
             function fail(xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); }
             var repl = row.querySelector('.s-replace');
             if (act === 'download') {
@@ -926,9 +1035,12 @@
                 api('POST', 'Suggestions/' + enc + '/Reject', {}).then(done, fail);
             } else if (act === 'reopen') {
                 api('POST', 'Suggestions/' + enc + '/Reopen').then(done, fail);
-            } else if (act === 'deleteWorse') {
-                if (!confirm('Smazat ' + x.DeletePaths.length + ' horší verzi/e filmu „' + x.Title + '“?\n\n' + x.DeletePaths.join('\n'))) return;
-                api('POST', 'Suggestions/' + enc + '/DeleteWorse').then(done, fail);
+            } else if (act === 'deleteVersions') {
+                var paths = Array.prototype.map.call(row.querySelectorAll('.s-del:checked'), function (c) { return c.getAttribute('data-path'); });
+                if (!paths.length) { msg.textContent = 'Zaškrtni, kterou verzi smazat.'; return; }
+                if (paths.length >= x.Versions.length) { msg.textContent = '⚠️ Aspoň jedna verze musí zůstat — celý film smaže „Smazat film“.'; return; }
+                if (!confirm('Smazat ' + paths.length + ' ' + (paths.length === 1 ? 'verzi' : 'verze') + ' „' + x.Title + '“?\n\n' + paths.join('\n'))) return;
+                api('POST', 'Suggestions/' + enc + '/DeleteVersions', { Paths: paths }).then(done, fail);
             } else if (act === 'deleteMovie') {
                 if (!confirm('Smazat film „' + x.Title + '“ z disku (všechny verze)?\n\n' + x.Versions.map(function (v) { return v.Path; }).join('\n'))) return;
                 api('POST', 'Suggestions/' + enc + '/DeleteMovie').then(done, fail);
@@ -965,19 +1077,22 @@
                             contentType: 'application/json', data: JSON.stringify(m)
                         }).then(function () {
                             api('POST', 'Suggestions/' + encodeURIComponent(x.Id) + '/Identified', { Note: 'Identifikováno jako ' + m.Name + (m.ProductionYear ? ' (' + m.ProductionYear + ')' : '') })
-                                .then(function () { out.innerHTML = '<div class="fs-msg">✅ Hotovo — plakát a herci se doplní během chvilky.</div>'; setTimeout(loadSuggest, 1500); });
+                                .then(function () { out.innerHTML = '<div class="fs-msg">✅ Hotovo — plakát a herci se doplní během chvilky.</div>'; setTimeout(function () { loadSuggest(false); }, 1500); });
                         }, function (xhr) { out.innerHTML = '<div class="fs-msg">❌ ' + esc(errMsg(xhr, 'Identifikace selhala.')) + '</div>'; });
                     });
                 });
             }, function (xhr) { out.innerHTML = '<div class="fs-msg">❌ ' + esc(errMsg(xhr, 'Hledání selhalo.')) + '</div>'; });
         }
 
-        el('fsSugScan').addEventListener('click', function () { api('POST', 'Suggestions/Scan', { Force: false }).then(function () { setTimeout(loadSuggest, 800); }); });
+        el('fsSugScan').addEventListener('click', function () { api('POST', 'Suggestions/Scan', { Force: false }).then(function () { setTimeout(function () { loadSuggest(false); }, 800); }); });
         el('fsSugScanAll').addEventListener('click', function () {
             if (!confirm('Hledat lepší verzi znovu u všech filmů pod cílovou kvalitou? U velké knihovny to trvá desítky minut (běží na pozadí).')) return;
-            api('POST', 'Suggestions/Scan', { Force: true }).then(function () { setTimeout(loadSuggest, 800); });
+            api('POST', 'Suggestions/Scan', { Force: true }).then(function () { setTimeout(function () { loadSuggest(false); }, 800); });
         });
-        el('fsSugStop').addEventListener('click', function () { api('POST', 'Suggestions/Stop').then(function () { setTimeout(loadSuggest, 800); }); });
+        el('fsSugSort').addEventListener('change', renderSugList);
+        el('fsSugOnlyCand').addEventListener('change', renderSugList);
+        el('fsSugRefresh').addEventListener('click', function () { loadSuggest(false); });
+        el('fsSugStop').addEventListener('click', function () { api('POST', 'Suggestions/Stop').then(function () { setTimeout(function () { loadSuggest(false); }, 800); }); });
 
         // ── Nastavení ────────────────────────────────────────────
         var cfgText = ['FastshareUsername', 'FastsharePassword', 'MoviesPath', 'SeriesPath', 'WindowExtraRanges', 'SuggestTargetQuality',

@@ -3,6 +3,7 @@ using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Fastshare.Configuration;
 using Jellyfin.Plugin.Fastshare.Core;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Hosting;
@@ -174,29 +175,7 @@ public sealed class LibraryAdvisor : BackgroundService
                 groups[key] = g;
             }
 
-            foreach (var src in _mediaSources.GetStaticMediaSources(item, false, null))
-            {
-                if (string.IsNullOrEmpty(src.Path) || !seenPaths.Add(src.Path))
-                {
-                    continue;
-                }
-
-                var video = src.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Video);
-                var w = video?.Width ?? 0;
-                var h = video?.Height ?? 0;
-                var size = src.Size ?? (File.Exists(src.Path) ? new FileInfo(src.Path).Length : 0);
-                var seconds = item.RunTimeTicks is > 0 ? item.RunTimeTicks.Value / TimeSpan.TicksPerSecond : 0;
-                g.Versions.Add(new LibraryVersion
-                {
-                    ItemId = Guid.TryParse(src.Id, out var sid) ? sid.ToString("N") : item.Id.ToString("N"),
-                    Path = src.Path,
-                    SizeBytes = size,
-                    Width = w,
-                    Height = h,
-                    Quality = LibraryFiles.QualityOf(w, h),
-                    Bitrate = seconds > 0 && size > 0 ? size * 8 / seconds : null,
-                });
-            }
+            g.Versions.AddRange(VersionsOf(item, seenPaths));
         }
 
         var found = new List<Suggestion>();
@@ -222,14 +201,12 @@ public sealed class LibraryAdvisor : BackgroundService
             });
         }
 
-        // ── Duplicity a lepší verze ──
-        var list = groups.Values.Where(g => g.Versions.Count > 0).ToList();
-        var toSearch = new List<(MovieGroup G, Suggestion? Dup)>();
-        foreach (var g in list)
+        // ── Duplicity a lepší verze filmů ──
+        var rejected = _state.Suggestions.GetAll().Where(s => s.Status != "new").Select(s => s.Id).ToHashSet();
+        var jobs = new List<SearchJob>();
+        foreach (var g in groups.Values.Where(g => g.Versions.Count > 0))
         {
             var best = LibraryFiles.BestFirst(g.Versions);
-            g.Versions.Clear();
-            g.Versions.AddRange(best);
             var id = g.Main.Id.ToString("N");
             Suggestion? dup = null;
             if (best.Count > 1)
@@ -249,58 +226,85 @@ public sealed class LibraryAdvisor : BackgroundService
             }
 
             // Nejlepší verze pod cílem (neznámé rozlišení se nebere — nejde posoudit)
-            if (best[0].Quality != null && LibraryFiles.Level(best[0].Quality) < targetLevel)
-            {
-                toSearch.Add((g, dup));
-            }
-        }
-
-        // Duplicity a filmy bez metadat jsou hotové hned — uložit, ať jsou v GUI, i když hledání
-        // lepších verzí poběží ještě hodinu
-        _state.Suggestions.Merge(found, new[] { "identify", "duplicate" });
-
-        // Nejdřív duplicity (ty se hledají vždy, ať je u nich rovnou i lepší verze), pak ostatní;
-        // u ostatních jen ty, u kterých se nehledalo posledních X dní.
-        var recheck = TimeSpan.FromDays(Math.Max(1, cfg.SuggestRecheckDays));
-        toSearch = toSearch
-            .OrderByDescending(x => x.Dup != null)
-            .ThenBy(x => _state.Suggestions.UpgradeChecked(x.G.Main.Id.ToString("N")) ?? DateTime.MinValue)
-            .ToList();
-        var rejected = _state.Suggestions.GetAll().Where(s => s.Status != "new").Select(s => s.Id).ToHashSet();
-
-        Status.Total = toSearch.Count;
-        _searchPhase = $"Hledám lepší verze na Fastshare ({toSearch.Count} filmů pod {target})";
-        Status.Phase = _searchPhase;
-        var searched = 0;
-        var upgrades = 0;
-        var complete = true;
-        foreach (var (g, dup) in toSearch)
-        {
-            ct.ThrowIfCancellationRequested();
-            Status.Done++;
-            var id = g.Main.Id.ToString("N");
-            var checkedAt = _state.Suggestions.UpgradeChecked(id);
-            var upId = "up:" + id;
-            if (dup == null && rejected.Contains(upId))
+            if (best[0].Quality == null || LibraryFiles.Level(best[0].Quality) >= targetLevel)
             {
                 continue;
             }
 
-            if (!force && dup == null && checkedAt != null && DateTime.UtcNow - checkedAt.Value < recheck)
+            var upId = "up:" + id;
+            var main = g.Main;
+            var d = dup;
+            jobs.Add(new SearchJob
             {
-                // nedávno hledáno — návrh (pokud byl) zůstane, jak je
-                var old = _state.Suggestions.Get(upId);
-                if (old is { Status: "new" })
+                Key = id,
+                Priority = d != null ? 0 : 2,
+                Skip = rejected.Contains(d?.Id ?? upId),
+                Find = c => FindBetterAsync(main, target, cfg, c),
+                Apply = cand =>
                 {
-                    found.Add(old);
-                }
+                    if (d != null)
+                    {
+                        d.Candidate = cand;
+                        _state.Suggestions.Upsert(d);
+                    }
+                    else if (cand != null)
+                    {
+                        var up = new Suggestion
+                        {
+                            Id = upId, Kind = "upgrade", ItemId = id, Title = main.Name, OriginalTitle = main.OriginalTitle,
+                            Year = main.ProductionYear, Versions = best, Candidate = cand,
+                        };
+                        found.Add(up);
+                        _state.Suggestions.Upsert(up); // průběžně — přerušená kontrola o nalezené nepřijde
+                    }
+                },
+                KeepOld = () =>
+                {
+                    // nedávno hledáno: dřívější návrh lepší verze zůstává (duplicita nese kandidáta přes Merge)
+                    if (d == null && _state.Suggestions.Get(upId) is { Status: "new" } old)
+                    {
+                        found.Add(old);
+                    }
+                },
+            });
+        }
 
+        // ── Seriály: sjednotit díly na převažující kvalitu ──
+        Status.Phase = "Načítám seriály z knihovny";
+        jobs.AddRange(CollectSeries(cfg, target, found, rejected, ct));
+
+        // Duplicity, filmy bez metadat a díly jsou hotové hned — uložit, ať jsou v GUI, i když
+        // hledání lepších verzí poběží ještě dny
+        _state.Suggestions.Merge(found, new[] { "identify", "duplicate", "episode" });
+
+        // Pořadí: duplicity filmů → díly seriálů → lepší verze filmů; v rámci skupiny nejdéle nehledané
+        var recheck = TimeSpan.FromDays(Math.Max(1, cfg.SuggestRecheckDays));
+        jobs = jobs
+            .Where(j => !j.Skip)
+            .OrderBy(j => j.Priority)
+            .ThenBy(j => _state.Suggestions.UpgradeChecked(j.Key) ?? DateTime.MinValue)
+            .ToList();
+
+        Status.Total = jobs.Count;
+        Status.Done = 0;
+        _searchPhase = $"Hledám lepší verze na Fastshare ({jobs.Count(j => j.Priority != 1)} filmů, {jobs.Count(j => j.Priority == 1)} dílů seriálů)";
+        Status.Phase = _searchPhase;
+        var searched = 0;
+        var complete = true;
+        foreach (var job in jobs)
+        {
+            ct.ThrowIfCancellationRequested();
+            Status.Done++;
+            var checkedAt = _state.Suggestions.UpgradeChecked(job.Key);
+            if (!force && checkedAt != null && DateTime.UtcNow - checkedAt.Value < recheck)
+            {
+                job.KeepOld?.Invoke();
                 continue;
             }
 
             if (_state.OutageRemaining() > TimeSpan.Zero)
             {
-                Status.Phase = "Fastshare je mimo — hledání lepších verzí přerušeno, dokončí se příště";
+                Status.Phase = "Fastshare je mimo — hledání přerušeno, dokončí se příště";
                 complete = false;
                 break;
             }
@@ -308,53 +312,202 @@ public sealed class LibraryAdvisor : BackgroundService
             SuggestedFile? candidate;
             try
             {
-                candidate = await FindBetterAsync(g.Main, target, cfg, ct).ConfigureAwait(false);
+                candidate = await job.Find(ct).ConfigureAwait(false);
             }
             catch (FastshareException)
             {
                 Status.Phase = _state.OutageReason ?? "Hledání přerušeno";
                 complete = false;
-                break; // film se neoznačí jako prohledaný — příště na něj dojde znovu
+                break; // neoznačí se jako prohledané — příště na to dojde znovu
             }
 
             searched++;
-            _state.Suggestions.MarkUpgradeChecked(id);
-            if (dup != null)
-            {
-                dup.Candidate = candidate;
-                _state.Suggestions.Upsert(dup);
-            }
-            else if (candidate != null)
-            {
-                upgrades++;
-                var up = new Suggestion
-                {
-                    Id = upId,
-                    Kind = "upgrade",
-                    ItemId = id,
-                    Title = g.Main.Name,
-                    OriginalTitle = g.Main.OriginalTitle,
-                    Year = g.Main.ProductionYear,
-                    Versions = g.Versions.ToList(),
-                    Candidate = candidate,
-                };
-                found.Add(up);
-                _state.Suggestions.Upsert(up); // průběžně — přerušená kontrola o nalezené nepřijde
-            }
-
+            _state.Suggestions.MarkUpgradeChecked(job.Key);
+            job.Apply(candidate);
         }
 
         // Neúplné hledání (výpadek) nesmí smazat dřívější návrhy lepších verzí, na které se nedostalo
-        _state.Suggestions.Merge(found, complete ? new[] { "identify", "duplicate", "upgrade" } : new[] { "identify", "duplicate" });
+        _state.Suggestions.Merge(found, complete ? new[] { "identify", "duplicate", "episode", "upgrade" } : new[] { "identify", "duplicate", "episode" });
         Status.Phase = null;
         var summary = string.Create(
             CultureInfo.InvariantCulture,
-            $"{movies.Count} filmů: {found.Count(f => f.Kind == "duplicate")} duplicit, {found.Count(f => f.Kind == "identify")} bez metadat, "
-            + $"lepší verze hledána u {searched} (nových návrhů {upgrades})");
+            $"{movies.Count} filmů: {found.Count(f => f.Kind == "duplicate")} duplicit, {found.Count(f => f.Kind == "identify")} bez metadat; "
+            + $"{_state.Suggestions.Series.Count} seriálů: {found.Count(f => f.Kind == "episode")} dílů k sjednocení; "
+            + $"hledáno {searched}× (návrhů lepší verze {found.Count(f => f.Kind == "upgrade")})");
         Status.LastResult = summary;
         Status.LastRunUtc = DateTime.UtcNow;
         _state.Suggestions.SetLastRun(summary);
         _logger.LogInformation("Fastshare: kontrola knihovny hotova — {Summary}", summary);
+    }
+
+    /// <summary>Jedno hledání lepší verze (film nebo díl) ve společné frontě.</summary>
+    private sealed class SearchJob
+    {
+        /// <summary>ID položky — pod ním se pamatuje, kdy se naposledy hledalo.</summary>
+        public string Key { get; set; } = string.Empty;
+
+        /// <summary>0 = duplicita filmu, 1 = díl seriálu, 2 = lepší verze filmu.</summary>
+        public int Priority { get; set; }
+
+        /// <summary>Návrh odmítnutý / vyřízený — nehledat.</summary>
+        public bool Skip { get; set; }
+
+        public Func<CancellationToken, Task<SuggestedFile?>> Find { get; set; } = null!;
+
+        public Action<SuggestedFile?> Apply { get; set; } = null!;
+
+        public Action? KeepOld { get; set; }
+    }
+
+    /// <summary>Verze (soubory) položky — sloučené verze i jednotlivé zdroje. `seen` brání dvojímu započtení.</summary>
+    private List<LibraryVersion> VersionsOf(BaseItem item, HashSet<string> seen)
+    {
+        var list = new List<LibraryVersion>();
+        foreach (var src in _mediaSources.GetStaticMediaSources(item, false, null))
+        {
+            if (string.IsNullOrEmpty(src.Path) || !seen.Add(src.Path))
+            {
+                continue;
+            }
+
+            var video = src.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Video);
+            var w = video?.Width ?? 0;
+            var h = video?.Height ?? 0;
+            var size = src.Size ?? (File.Exists(src.Path) ? new FileInfo(src.Path).Length : 0);
+            var seconds = item.RunTimeTicks is > 0 ? item.RunTimeTicks.Value / TimeSpan.TicksPerSecond : 0;
+            list.Add(new LibraryVersion
+            {
+                ItemId = Guid.TryParse(src.Id, out var sid) ? sid.ToString("N") : item.Id.ToString("N"),
+                Path = src.Path,
+                SizeBytes = size,
+                Width = w,
+                Height = h,
+                Quality = LibraryFiles.QualityOf(w, h),
+                Bitrate = seconds > 0 && size > 0 ? size * 8 / seconds : null,
+            });
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// Seriály: pro každý spočítá kvalitu dílů, cíl = převažující kvalita (při shodě vyšší, nejvýš
+    /// cíl z nastavení; ručně zvolený má přednost). Díl pod cílem nebo ve víc verzích = návrh.
+    /// Vrací hledání lepších verzí dílů pod cílem.
+    /// </summary>
+    private List<SearchJob> CollectSeries(PluginConfiguration cfg, string maxTarget, List<Suggestion> found, HashSet<string> rejected, CancellationToken ct)
+    {
+        var jobs = new List<SearchJob>();
+        var episodes = _library.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = [BaseItemKind.Episode],
+            Recursive = true,
+            IsVirtualItem = false,
+        }).OfType<Episode>().ToList();
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var summaries = new List<SeriesSummary>();
+        foreach (var series in episodes.Where(e => e.SeriesId != Guid.Empty).GroupBy(e => e.SeriesId))
+        {
+            ct.ThrowIfCancellationRequested();
+            var seriesId = series.Key.ToString("N");
+            var eps = series
+                .Select(e => (Ep: e, Versions: LibraryFiles.BestFirst(VersionsOf(e, seen))))
+                .Where(x => x.Versions.Count > 0)
+                .ToList();
+            if (eps.Count == 0)
+            {
+                continue;
+            }
+
+            var dist = eps.Where(x => x.Versions[0].Quality != null)
+                .GroupBy(x => x.Versions[0].Quality!)
+                .ToDictionary(g => g.Key, g => g.Count());
+            var manual = _state.Suggestions.SeriesTarget(seriesId);
+            var mode = dist.OrderByDescending(kv => kv.Value).ThenByDescending(kv => LibraryFiles.Level(kv.Key)).Select(kv => kv.Key).FirstOrDefault() ?? maxTarget;
+            var target = manual ?? (LibraryFiles.Level(mode) > LibraryFiles.Level(maxTarget) ? maxTarget : mode);
+            var targetLevel = LibraryFiles.Level(target);
+            var name = series.First().SeriesName ?? "?";
+            summaries.Add(new SeriesSummary
+            {
+                SeriesId = seriesId,
+                Name = name,
+                Episodes = eps.Count,
+                Qualities = dist,
+                Target = target,
+                TargetIsManual = manual != null,
+                MultiVersion = eps.Count(x => x.Versions.Count > 1),
+            });
+
+            BaseItem? seriesItem = null;
+            foreach (var (ep, versions) in eps)
+            {
+                var below = versions[0].Quality != null && LibraryFiles.Level(versions[0].Quality) < targetLevel;
+                if (!below && versions.Count < 2)
+                {
+                    continue;
+                }
+
+                var epId = ep.Id.ToString("N");
+                var sug = new Suggestion
+                {
+                    Id = "ep:" + epId,
+                    Kind = "episode",
+                    ItemId = epId,
+                    Title = name,
+                    SeriesId = seriesId,
+                    SeriesName = name,
+                    Season = ep.ParentIndexNumber,
+                    Episode = ep.IndexNumber,
+                    TargetQuality = target,
+                    Versions = versions,
+                    DeletePaths = versions.Skip(1).Select(v => v.Path).ToList(),
+                };
+                found.Add(sug);
+
+                if (!below || ep.ParentIndexNumber == null || ep.IndexNumber == null)
+                {
+                    continue;
+                }
+
+                seriesItem ??= _library.GetItemById(series.Key);
+                var titles = new[] { name, seriesItem?.OriginalTitle }.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                var s = sug;
+                jobs.Add(new SearchJob
+                {
+                    Key = epId,
+                    Priority = 1,
+                    Skip = rejected.Contains(s.Id),
+                    Find = c => FindEpisodeAsync(titles!, ep.ParentIndexNumber.Value, ep.IndexNumber.Value, target, cfg, c),
+                    Apply = cand =>
+                    {
+                        s.Candidate = cand;
+                        _state.Suggestions.Upsert(s);
+                    },
+                });
+            }
+        }
+
+        _state.Suggestions.Series = summaries.OrderBy(x => x.Name, StringComparer.CurrentCulture).ToList();
+        return jobs;
+    }
+
+    /// <summary>Díl v cílové kvalitě: „Název S01E02" (český, pak původní název seriálu).</summary>
+    private async Task<SuggestedFile?> FindEpisodeAsync(IReadOnlyList<string> titles, int season, int episode, string target, PluginConfiguration cfg, CancellationToken ct)
+    {
+        var opts = FsState.SelectorOptions(target);
+        opts.MinQuality = target;
+        foreach (var title in titles)
+        {
+            var t = new SelectTarget { Kind = MediaKind.Episode, Title = title, Season = season, Episode = episode };
+            var c = await SearchBestAsync(t, opts, cfg, ct).ConfigureAwait(false);
+            if (c != null)
+            {
+                return c;
+            }
+        }
+
+        return null;
     }
 
     private string? _searchPhase;
@@ -369,7 +522,7 @@ public sealed class LibraryAdvisor : BackgroundService
             + (hours >= 1 ? $", zbývá asi {hours:0} h" : string.Empty);
     }
 
-    /// <summary>Nejlepší soubor v cílové kvalitě: hledá český název + rok, pak původní název.</summary>
+    /// <summary>Nejlepší soubor filmu v cílové kvalitě: český název + rok, pak původní název.</summary>
     private async Task<SuggestedFile?> FindBetterAsync(BaseItem movie, string target, PluginConfiguration cfg, CancellationToken ct)
     {
         var opts = FsState.SelectorOptions(target);
@@ -381,48 +534,60 @@ public sealed class LibraryAdvisor : BackgroundService
         foreach (var title in titles)
         {
             var t = new SelectTarget { Kind = MediaKind.Movie, Title = title!, Year = movie.ProductionYear };
-            List<FsFile> files;
-            try
+            var c = await SearchBestAsync(t, opts, cfg, ct).ConfigureAwait(false);
+            if (c != null)
             {
-                files = await _state.Client.SearchAllAsync(t.SearchTerm(), cfg.ShowAdult, 1, ct, _state.SearchGate, WaitNote).ConfigureAwait(false);
+                return c;
             }
-            catch (Exception ex) when (ex is HttpRequestException or FastshareException or System.Text.Json.JsonException)
-            {
-                _logger.LogWarning("Fastshare: hledání lepší verze \"{Title}\" selhalo: {Msg}", title, ex.Message);
-
-                // Fastshare přibrzdil (429/403 z Cloudflare) nebo je mimo (5xx, nedovoláme se) → hodinu
-                // pauza; smyčka kontroly výpadek uvidí a skončí, film se zkusí příště znovu
-                var code = (int?)(ex as HttpRequestException)?.StatusCode;
-                if (code is null or 429 or 403 or >= 500)
-                {
-                    _state.MarkOutage(TimeSpan.FromHours(1), code is 429 or 403
-                        ? $"Fastshare omezil hledání (HTTP {code}) — pauza hodinu, zvaž nižší strop v Nastavení"
-                        : "Fastshare nedostupný při hledání (" + ex.Message + ")");
-                    throw new FastshareException("přerušeno: " + ex.Message);
-                }
-
-                return null;
-            }
-
-            var ranked = FileSelector.Rank(files, t, opts);
-            if (ranked.Count > 0)
-            {
-                var f = ranked[0].File;
-                return new SuggestedFile
-                {
-                    FileId = f.Id,
-                    FileName = f.FileName,
-                    DownloadUrl = f.DownloadUrl,
-                    SizeBytes = f.SizeBytes,
-                    DurationSec = f.DurationSec,
-                    Quality = f.Quality,
-                    Language = string.IsNullOrEmpty(f.LanguageLabel) ? null : f.LanguageLabel,
-                    Reason = ranked[0].Reason,
-                };
-            }
-
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Jedno hledání přes strop dotazů. Přibrzdění (429/403 z Cloudflare) nebo výpadek (5xx) →
+    /// hodinová pauza a <see cref="FastshareException"/> (smyčka kontroly skončí, položka se
+    /// neoznačí jako prohledaná). Jiná chyba = nic nenalezeno.
+    /// </summary>
+    private async Task<SuggestedFile?> SearchBestAsync(SelectTarget t, FileSelectorOptions opts, PluginConfiguration cfg, CancellationToken ct)
+    {
+        List<FsFile> files;
+        try
+        {
+            files = await _state.Client.SearchAllAsync(t.SearchTerm(), cfg.ShowAdult, 1, ct, _state.SearchGate, WaitNote).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or FastshareException or System.Text.Json.JsonException)
+        {
+            _logger.LogWarning("Fastshare: hledání \"{Term}\" selhalo: {Msg}", t.SearchTerm(), ex.Message);
+            var code = (int?)(ex as HttpRequestException)?.StatusCode;
+            if (ex is HttpRequestException && code is null or 429 or 403 or >= 500)
+            {
+                _state.MarkOutage(TimeSpan.FromHours(1), code is 429 or 403
+                    ? $"Fastshare omezil hledání (HTTP {code}) — pauza hodinu, zvaž nižší strop v Nastavení"
+                    : "Fastshare nedostupný při hledání (" + ex.Message + ")");
+                throw new FastshareException("přerušeno: " + ex.Message);
+            }
+
+            return null;
+        }
+
+        var ranked = FileSelector.Rank(files, t, opts);
+        if (ranked.Count == 0)
+        {
+            return null;
+        }
+
+        var f = ranked[0].File;
+        return new SuggestedFile
+        {
+            FileId = f.Id,
+            FileName = f.FileName,
+            DownloadUrl = f.DownloadUrl,
+            SizeBytes = f.SizeBytes,
+            DurationSec = f.DurationSec,
+            Quality = f.Quality,
+            Language = string.IsNullOrEmpty(f.LanguageLabel) ? null : f.LanguageLabel,
+            Reason = ranked[0].Reason,
+        };
     }
 }

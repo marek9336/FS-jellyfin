@@ -216,6 +216,12 @@ public class QueueItem
     /// <summary>Ze kterého návrhu položka vznikla (po dokončení se návrh označí).</summary>
     public string? SuggestionId { get; set; }
 
+    /// <summary>
+    /// Uložit do téhle složky (místo standardní cesty) — u dílů seriálu tam, kde seriál v knihovně
+    /// už je, ať Jellyfin nevytvoří druhý seriál vedle stávající složky („Mentalista" vs. „Mentalista (seriál)…").
+    /// </summary>
+    public string? TargetDir { get; set; }
+
     /// <summary>Doplňující výsledek pro GUI („nahrazeno — smazány 2 starší verze").</summary>
     public string? ResultNote { get; set; }
 }
