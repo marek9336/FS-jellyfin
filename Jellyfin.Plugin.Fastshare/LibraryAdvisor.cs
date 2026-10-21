@@ -251,6 +251,10 @@ public sealed class LibraryAdvisor : BackgroundService
             }
         }
 
+        // Duplicity a filmy bez metadat jsou hotové hned — uložit, ať jsou v GUI, i když hledání
+        // lepších verzí poběží ještě hodinu
+        _state.Suggestions.Merge(found, new[] { "identify", "duplicate" });
+
         // Nejdřív duplicity (ty se hledají vždy, ať je u nich rovnou i lepší verze), pak ostatní;
         // u ostatních jen ty, u kterých se nehledalo posledních X dní.
         var recheck = TimeSpan.FromDays(Math.Max(1, cfg.SuggestRecheckDays));
@@ -264,6 +268,7 @@ public sealed class LibraryAdvisor : BackgroundService
         Status.Phase = $"Hledám lepší verze na Fastshare ({toSearch.Count} filmů pod {target})";
         var searched = 0;
         var upgrades = 0;
+        var complete = true;
         foreach (var (g, dup) in toSearch)
         {
             ct.ThrowIfCancellationRequested();
@@ -291,6 +296,7 @@ public sealed class LibraryAdvisor : BackgroundService
             if (_state.OutageRemaining() > TimeSpan.Zero)
             {
                 Status.Phase = "Fastshare je mimo — hledání lepších verzí přerušeno, dokončí se příště";
+                complete = false;
                 break;
             }
 
@@ -300,11 +306,12 @@ public sealed class LibraryAdvisor : BackgroundService
             if (dup != null)
             {
                 dup.Candidate = candidate;
+                _state.Suggestions.Upsert(dup);
             }
             else if (candidate != null)
             {
                 upgrades++;
-                found.Add(new Suggestion
+                var up = new Suggestion
                 {
                     Id = upId,
                     Kind = "upgrade",
@@ -314,13 +321,17 @@ public sealed class LibraryAdvisor : BackgroundService
                     Year = g.Main.ProductionYear,
                     Versions = g.Versions.ToList(),
                     Candidate = candidate,
-                });
+                };
+                found.Add(up);
+                _state.Suggestions.Upsert(up); // průběžně — přerušená kontrola o nalezené nepřijde
             }
 
             await Task.Delay(SearchPause, ct).ConfigureAwait(false);
         }
 
-        _state.Suggestions.Merge(found, new[] { "identify", "duplicate", "upgrade" });
+        // Neúplné hledání (výpadek) nesmí smazat dřívější návrhy lepších verzí, na které se nedostalo
+        _state.Suggestions.Merge(found, complete ? new[] { "identify", "duplicate", "upgrade" } : new[] { "identify", "duplicate" });
+        Status.Phase = null;
         var summary = string.Create(
             CultureInfo.InvariantCulture,
             $"{movies.Count} filmů: {found.Count(f => f.Kind == "duplicate")} duplicit, {found.Count(f => f.Kind == "identify")} bez metadat, "

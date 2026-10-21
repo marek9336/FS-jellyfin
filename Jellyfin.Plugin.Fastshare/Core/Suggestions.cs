@@ -195,6 +195,33 @@ public sealed class SuggestionStore
         }
     }
 
+    /// <summary>
+    /// Průběžné uložení jednoho návrhu během kontroly (ať se nalezené lepší verze neztratí, když
+    /// se dlouhá kontrola přeruší). Rozhodnutý návrh nepřepíše.
+    /// </summary>
+    public void Upsert(Suggestion s)
+    {
+        lock (_lock)
+        {
+            var old = _state.Items.FirstOrDefault(i => i.Id == s.Id);
+            if (old == null)
+            {
+                _state.Items.Add(s);
+            }
+            else if (old.Status == "new")
+            {
+                s.CreatedUtc = old.CreatedUtc;
+                _state.Items[_state.Items.IndexOf(old)] = s;
+            }
+            else
+            {
+                return;
+            }
+
+            SaveLocked();
+        }
+    }
+
     public void Update(string id, Action<Suggestion> mutate)
     {
         lock (_lock)

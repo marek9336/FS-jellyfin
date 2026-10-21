@@ -90,6 +90,23 @@ public sealed class LibraryTests : IDisposable
     }
 
     [Fact]
+    public void UpsertKeepsDecisionAndSurvivesInterruptedRun()
+    {
+        var store = new SuggestionStore(Path.Combine(_root, "u.json"), _ => { });
+        store.Upsert(new Suggestion { Id = "up:1", Kind = "upgrade", Title = "A" });
+        store.Update("up:1", s => s.Status = "rejected");
+        store.Upsert(new Suggestion { Id = "up:1", Kind = "upgrade", Title = "A2" });
+        store.Upsert(new Suggestion { Id = "up:2", Kind = "upgrade", Title = "B" });
+
+        // přerušená kontrola (výpadek) slučuje jen identify+duplicate → návrhy lepších verzí zůstanou
+        store.Merge([], ["identify", "duplicate"]);
+        var all = store.GetAll();
+        Assert.Equal(2, all.Count);
+        Assert.Equal("rejected", all.Single(x => x.Id == "up:1").Status);
+        Assert.Equal("A", all.Single(x => x.Id == "up:1").Title);
+    }
+
+    [Fact]
     public void MinQualityFiltersCandidates()
     {
         var sd = new FsFile { Id = "1", FileName = "Pelisky 1999 CZ.avi", DownloadUrl = "x", SizeBytes = 700L << 20, Resolution = "608x400" };
