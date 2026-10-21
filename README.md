@@ -43,6 +43,10 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
     přesune díl do správné řady,
   - ruční oprava u každé verze, i když ji kontrola nepozná: ✏️ *Jiný film* (najít v TMDb, nebo oddělit do vlastní
     složky „Název (rok)/", když ho Jellyfin sloučil s jinými) a ✏️ *Řada/díl* (přesun a přejmenování na „Seriál - SxxEyy"),
+  - díly, které Jellyfin neočísloval („comeback-22-koprovka", „Po stopách duchů XIII (9)", „Highschool_DxD_NeW_03",
+    „S Homerem přijde zákon.avi"): odhad z čísla v názvu, římské řady, složky („2. série"), pořadí od začátku seriálu
+    („Comeback-45" → S02E19) a podle názvu dílu z TMDb; jistý odhad (TMDb díl zná a název neodporuje) jde hromadně
+    „🔧 Zařadit odhadnuté", nejistý jednotlivě,
   - přesuny běží na pozadí (mezi Filmy a Seriály se 4 GB kopírují minuty), kopie jde do skrytého souboru a každý
     soubor se přesouvá jen jednou — opakované kliknutí nic nezdvojí,
   - 🚚 díly seriálů ve Filmech → přesun do složky řady seriálu; stejný seriál ve dvou složkách → sloučit;
@@ -50,6 +54,8 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   - řazení: nalezená lepší verze první, nejvíc ušetří místa, nejvíc kopií, od nejhorší / nejlepší kvality,
     velikost, název.
   Kontrola běží na pozadí (jednou týdně, nebo tlačítkem), automatická hledání mají strop (výchozí 20/h);
+  díly seriálů se hledají po seriálech (jeden dotaz „Mentalista" = až 200 souborů, nejvýš 5 stránek) — 150 chybějících
+  dílů jsou 2 dotazy, ne 150;
   lepší verze se u položky hledá znovu po 30 dnech, po restartu Jellyfinu kontrola pokračuje.
 - Pojmenování podle Jellyfinu: `Filmy/Název (rok)/Název (rok) - [1080p CZ].mkv`,
   `Seriály/Název/Season 01/Název - S01E02 - [1080p CZ].mkv`; duplicity ve stejné kvalitě se nestahují.

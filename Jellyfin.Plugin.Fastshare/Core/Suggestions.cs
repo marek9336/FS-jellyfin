@@ -45,6 +45,11 @@ public class LibraryVersion
 
     public int? FileEpisode { get; set; }
 
+    /// <summary>Díl neočíslovaný Jellyfinem: název odhadnutého dílu z TMDb a zda je odhad jistý (jde do hromadného zařazení).</summary>
+    public string? FileEpisodeName { get; set; }
+
+    public bool FileGuessSure { get; set; }
+
     /// <summary>Název a rok podle názvu souboru (pro identifikaci špatně zařazeného souboru).</summary>
     public string? FileTitle { get; set; }
 

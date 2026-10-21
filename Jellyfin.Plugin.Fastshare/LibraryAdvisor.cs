@@ -165,6 +165,8 @@ public sealed class LibraryAdvisor : BackgroundService
     private async Task RunAsync(PluginConfiguration cfg, bool force, CancellationToken ct)
     {
         _state.Suggestions.RunPending = true;
+        _seriesSearch.Clear();
+        _seriesFetched.Clear();
         Status.Running = true;
         Status.Done = 0;
         Status.Phase = "Načítám filmy z knihovny";
@@ -343,7 +345,10 @@ public sealed class LibraryAdvisor : BackgroundService
 
         Status.Total = jobs.Count;
         Status.Done = 0;
-        _searchPhase = $"Hledám lepší verze na Fastshare ({jobs.Count(j => j.Priority != 1)} filmů, {jobs.Count(j => j.Priority == 1)} dílů seriálů)";
+        _jobs = jobs;
+        _recheck = recheck;
+        _force = force;
+        _searchPhase = $"Hledám lepší verze na Fastshare ({jobs.Count(j => j.Priority != 1)} filmů, {jobs.Count(j => j.Priority == 1)} dílů z {jobs.Where(j => j.NetKey != null).Select(j => j.NetKey).Distinct().Count()} seriálů)";
         Status.Phase = _searchPhase;
         var searched = 0;
         var complete = true;
@@ -406,6 +411,9 @@ public sealed class LibraryAdvisor : BackgroundService
 
         /// <summary>0 = duplicita filmu, 1 = díl seriálu, 2 = lepší verze filmu.</summary>
         public int Priority { get; set; }
+
+        /// <summary>Díly jednoho seriálu sdílejí jedno hledání (ID seriálu) — pro odhad zbývajícího času.</summary>
+        public string? NetKey { get; set; }
 
         /// <summary>Návrh odmítnutý / vyřízený — nehledat.</summary>
         public bool Skip { get; set; }
@@ -522,11 +530,33 @@ public sealed class LibraryAdvisor : BackgroundService
             var titles = new[] { name, seriesItem?.OriginalTitle }.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             jobs.AddRange(CollectMissing(series.Key, seriesId, name, titles!, seriesItem, eps.Select(x => (x.Ep, x.Versions)).ToList(),
                 virtualBySeries, missingKnown, target, summary, found, rejected, cfg));
+            // díly, které TMDb / knihovna zná (řada, díl) → název — pro odhad neočíslovaných dílů
+            var known = new Dictionary<(int Season, int Episode), string?>();
+            foreach (var e in eps.Select(x => x.Ep).Concat(virtualBySeries.TryGetValue(series.Key, out var virt) ? virt : new List<Episode>()))
+            {
+                if (e.ParentIndexNumber is int ks && e.IndexNumber is int ke)
+                {
+                    known.TryAdd((ks, ke), e.Name);
+                }
+            }
+
             foreach (var (ep, versions) in eps)
             {
                 foreach (var v in versions)
                 {
                     v.Suspect = LibraryFiles.EpisodeSuspect(v, ep.ParentIndexNumber, ep.IndexNumber);
+                    if (ep.IndexNumber == null)
+                    {
+                        var g = EpisodeGuess.Guess(v.Path, titles!, known);
+                        v.FileSeason = g?.Season;
+                        v.FileEpisode = g?.Episode;
+                        v.FileEpisodeName = g?.Name;
+                        v.FileGuessSure = g?.Sure == true;
+                        v.Suspect = g == null
+                            ? "Jellyfin díl neočísloval a z názvu souboru ho nejde poznat — zařaď ho ručně"
+                            : string.Create(CultureInfo.InvariantCulture, $"Jellyfin díl neočísloval — odhad S{g.Season:D2}E{g.Episode:D2}")
+                              + (g.Name != null ? $" „{g.Name}“" : " (TMDb takový díl nezná)") + $" {g.How}" + (g.Sure ? string.Empty : " — nejisté, zkontroluj");
+                    }
                 }
 
                 LibraryFiles.MarkLengths(versions);
@@ -563,8 +593,9 @@ public sealed class LibraryAdvisor : BackgroundService
                 {
                     Key = epId,
                     Priority = 1,
+                    NetKey = seriesId,
                     Skip = rejected.Contains(s.Id),
-                    Find = c => FindEpisodeAsync(titles!, ep.ParentIndexNumber.Value, ep.IndexNumber.Value, target, cfg, c),
+                    Find = c => FindEpisodeAsync(seriesId, titles!, ep.ParentIndexNumber.Value, ep.IndexNumber.Value, target, cfg, c),
                     Apply = cand =>
                     {
                         s.Candidate = cand;
@@ -715,8 +746,9 @@ public sealed class LibraryAdvisor : BackgroundService
             {
                 Key = id,
                 Priority = 1,
+                NetKey = seriesId,
                 Skip = rejected.Contains(id),
-                Find = c => FindEpisodeAsync(titles, season, episode, target, cfg, c, allowLower: true),
+                Find = c => FindEpisodeAsync(seriesId, titles, season, episode, target, cfg, c, allowLower: true),
                 Apply = cand =>
                 {
                     s.Candidate = cand;
@@ -759,7 +791,14 @@ public sealed class LibraryAdvisor : BackgroundService
     }
 
     /// <summary>Díl v cílové kvalitě: „Název S01E02" (český, pak původní název seriálu).</summary>
-    private async Task<SuggestedFile?> FindEpisodeAsync(IReadOnlyList<string> titles, int season, int episode, string target, PluginConfiguration cfg, CancellationToken ct, bool allowLower = false)
+    // Hledání po seriálech: „Simpsonovi" jednou (pár stránek po 200), z výsledků se vyberou všechny díly —
+    // místo dotazu na každý díl („Simpsonovi S05E01"). Při stropu 20/h je to rozdíl mezi dny a hodinami
+    // a pro Fastshare to vypadá jako běžné hledání, ne jako procházení botem.
+    private const int SeriesSearchPages = 5;
+    private readonly Dictionary<string, (List<FsFile> Files, bool Truncated)> _seriesSearch = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _seriesFetched = new(StringComparer.Ordinal);
+
+    private async Task<SuggestedFile?> FindEpisodeAsync(string seriesId, IReadOnlyList<string> titles, int season, int episode, string target, PluginConfiguration cfg, CancellationToken ct, bool allowLower = false)
     {
         var opts = FsState.SelectorOptions(target);
         opts.MinQuality = target;
@@ -769,7 +808,25 @@ public sealed class LibraryAdvisor : BackgroundService
         foreach (var title in titles)
         {
             var t = new SelectTarget { Kind = MediaKind.Episode, Title = title, Season = season, Episode = episode };
-            var c = await SearchBestAsync(t, opts, cfg, ct, fallback).ConfigureAwait(false);
+            if (!_seriesSearch.TryGetValue(title, out var cached))
+            {
+                var total = 0;
+                var files = await SearchFilesAsync(FastshareClient.SearchTerm(title), SeriesSearchPages, cfg, ct, n => total = n).ConfigureAwait(false);
+                cached = (files ?? new List<FsFile>(), files != null && total > SeriesSearchPages);
+                if (files != null)
+                {
+                    _seriesSearch[title] = cached;
+                }
+            }
+
+            _seriesFetched.Add(seriesId);
+            var c = Pick(cached.Files, t, opts, fallback);
+            if (c == null && cached.Truncated)
+            {
+                // obří seriál (víc než 1000 souborů) — na díl, který se do stránek nevešel, zvlášť
+                c = await SearchBestAsync(t, opts, cfg, ct, fallback).ConfigureAwait(false);
+            }
+
             if (c != null)
             {
                 return c;
@@ -781,10 +838,24 @@ public sealed class LibraryAdvisor : BackgroundService
 
     private string? _searchPhase;
 
+    private List<SearchJob> _jobs = new();
+    private TimeSpan _recheck;
+    private bool _force;
+
+    /// <summary>Hledá se (nebylo prohledáno v posledních N dnech, nebo „hledat znovu vše")?</summary>
+    private bool NeedsSearch(SearchJob j)
+    {
+        var at = _state.Suggestions.UpgradeChecked(j.Key);
+        return _force || at == null || DateTime.UtcNow - at.Value >= _recheck;
+    }
+
     /// <summary>Stavová hláška při čekání na strop hledání: kdy další dotaz a kolik zbývá.</summary>
     private void WaitNote(DateTime nextUtc)
     {
-        var left = Math.Max(0, Status.Total - Status.Done);
+        // dotazy, které ještě zbývají: film = 1, seriál = ~2 stránky (jeho díly už pak žádný dotaz nepotřebují)
+        var rest = _jobs.Skip(Math.Max(0, Status.Done - 1)).Where(NeedsSearch).ToList();
+        var left = rest.Count(j => j.NetKey == null)
+            + (2 * rest.Where(j => j.NetKey != null && !_seriesFetched.Contains(j.NetKey)).Select(j => j.NetKey).Distinct().Count());
         var hours = left * _state.SearchGate.Interval.TotalHours;
         Status.Phase = $"{_searchPhase} — strop {Plugin.Instance?.Configuration.AutoSearchesPerHour}/h, další hledání v "
             + nextUtc.ToLocalTime().ToString("H:mm", CultureInfo.InvariantCulture)
@@ -820,14 +891,27 @@ public sealed class LibraryAdvisor : BackgroundService
     /// </summary>
     private async Task<SuggestedFile?> SearchBestAsync(SelectTarget t, FileSelectorOptions opts, PluginConfiguration cfg, CancellationToken ct, FileSelectorOptions? fallback = null)
     {
-        List<FsFile> files;
+        var files = await SearchFilesAsync(t.SearchTerm(), 1, cfg, ct).ConfigureAwait(false);
+        return files == null ? null : Pick(files, t, opts, fallback);
+    }
+
+    /// <summary>Hledání přes strop dotazů (každá stránka = jeden dotaz). null = chyba (nic nenalezeno).</summary>
+    private async Task<List<FsFile>?> SearchFilesAsync(string term, int pages, PluginConfiguration cfg, CancellationToken ct, Action<int>? onTotalPages = null)
+    {
         try
         {
-            files = await _state.Client.SearchAllAsync(t.SearchTerm(), cfg.ShowAdult, 1, ct, _state.SearchGate, WaitNote).ConfigureAwait(false);
+            var got = 0;
+            var files = await _state.Client.SearchAllAsync(term, cfg.ShowAdult, pages, ct, _state.SearchGate, WaitNote, n =>
+            {
+                got++;
+                onTotalPages?.Invoke(n);
+            }).ConfigureAwait(false);
+            _logger.LogInformation("Fastshare: kontrola hledala „{Term}“ — {Pages} {Word}, {Count} souborů", term, got, got == 1 ? "dotaz" : "dotazy", files.Count);
+            return files;
         }
         catch (Exception ex) when (ex is HttpRequestException or FastshareException or System.Text.Json.JsonException)
         {
-            _logger.LogWarning("Fastshare: hledání \"{Term}\" selhalo: {Msg}", t.SearchTerm(), ex.Message);
+            _logger.LogWarning("Fastshare: hledání \"{Term}\" selhalo: {Msg}", term, ex.Message);
             var code = (int?)(ex as HttpRequestException)?.StatusCode;
             if (ex is HttpRequestException && code is null or 429 or 403 or >= 500)
             {
@@ -839,7 +923,10 @@ public sealed class LibraryAdvisor : BackgroundService
 
             return null;
         }
+    }
 
+    private static SuggestedFile? Pick(List<FsFile> files, SelectTarget t, FileSelectorOptions opts, FileSelectorOptions? fallback)
+    {
         var ranked = FileSelector.Rank(files, t, opts);
         if (ranked.Count == 0 && fallback != null)
         {

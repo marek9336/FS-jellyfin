@@ -1035,6 +1035,11 @@
             var missing = eps.filter(function (e) { return e.Kind === 'missing'; });
             eps = eps.filter(function (e) { return e.Kind !== 'missing'; });
             var withC = eps.filter(function (e) { return e.Candidate; }).length;
+            var guessed = [];
+            eps.forEach(function (e) {
+                if (e.Episode == null && e.Status === 'new') e.Versions.forEach(function (v) { if (v.FileGuessSure && v.FileEpisode != null) guessed.push(v); });
+            });
+            var sop = fileOp('series', sum.SeriesId);
             var missC = missing.filter(function (e) { return e.Candidate; }).length;
             var missInfo = sum.Missing == null ? 'chybějící díly: Jellyfin je neeviduje'
                 : (sum.Missing ? '<strong>chybí ' + sum.Missing + ' dílů</strong>' : 'žádný díl nechybí');
@@ -1053,11 +1058,12 @@
                 + (withC ? '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;"><input type="checkbox" class="s-sreplace" checked> nahradit</label>'
                     + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="downloadAll">⬇️ Stáhnout všech ' + withC + '</button>' : '')
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="rejectAll" title="Kvalita seriálu stačí — nenavrhovat jeho díly">✋ Celý seriál nechat</button>'
+                + (guessed.length ? '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="fixGuessed" title="Neočíslované díly s jistým odhadem přesunout a přejmenovat na „Seriál - SxxEyy“ (nejisté zůstanou)">🔧 Zařadit odhadnuté (' + guessed.length + ')</button>' : '')
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="deleteSeries" title="Smazat všechny díly seriálu z disku">🗑 Smazat celý seriál</button>'
                 + (sum.Missing ? '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="' + (sum.FindMissing ? 'missingOff' : 'missingOn') + '" title="Hledat chybějící díly na Fastshare v kvalitě ' + esc(sum.Target) + ' (když není, nejlepší nižší)">'
                     + (sum.FindMissing ? '⏹ Nedohledávat chybějící' : '🔍 Dohledat ' + sum.Missing + ' chybějících') + '</button>' : '')
                 + (missC ? '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="downloadMissing">⬇️ Stáhnout ' + missC + ' nalezených chybějících</button>' : '')
-                + '</div>' + eps.map(itemHtml).join('')
+                + '</div>' + (sop ? '<div class="fs-msg" style="color:' + (sop.Running ? '#90caf9' : '#ffb74d') + ';">' + esc(sop.Text) + '</div>' : '') + eps.map(itemHtml).join('')
                 + (missing.length ? '<div style="margin:.8em 0 .3em; font-weight:600;">❓ Chybějící díly (' + missing.length + ')</div>' + missing.map(itemHtml).join('') : '')
                 + '</details>';
         }
@@ -1155,6 +1161,18 @@
             if (act === 'downloadAll') {
                 var repl = d.querySelector('.s-sreplace');
                 api('POST', 'Suggestions/Series/' + sid + '/DownloadAll', { Replace: !!(repl && repl.checked) }).then(function (r) { Dashboard.alert(r.message); loadSuggest(false); });
+            } else if (act === 'fixGuessed') {
+                var list = [];
+                (sugData.items || []).forEach(function (e) {
+                    if (e.SeriesId === sid && e.Kind === 'episode' && e.Status === 'new' && e.Episode == null)
+                        e.Versions.forEach(function (v) { if (v.FileGuessSure && v.FileEpisode != null) list.push(epTag(v.FileSeason != null ? v.FileSeason : 1, v.FileEpisode) + (v.FileEpisodeName ? ' „' + v.FileEpisodeName + '“' : '') + '  ←  ' + v.Path.split('/').pop()); });
+                });
+                list.sort();
+                if (!confirm('Zařadit ' + list.length + (list.length === 1 ? ' díl' : list.length < 5 ? ' díly' : ' dílů') + ' (přesun do složky řady a přejmenování)?\n\n' + list.slice(0, 25).join('\n') + (list.length > 25 ? '\n… a dalších ' + (list.length - 25) : ''))) return;
+                d.querySelectorAll('.s-series').forEach(function (b) { b.disabled = true; });
+                api('POST', 'Suggestions/Series/' + sid + '/FixGuessed').then(function (r) {
+                    if (r.background) { Dashboard.alert(r.message + ' Po dokončení se seznam obnoví.'); watchOps(); } else Dashboard.alert(r.message);
+                });
             } else if (act === 'deleteSeries') {
                 var sum = (sugData.series || []).filter(function (x) { return x.SeriesId === sid; })[0] || {};
                 if (!confirm('Smazat CELÝ seriál „' + sum.Name + '“ (' + sum.Episodes + ' dílů) z disku?\n\n' + (sum.Folders || []).join('\n') + '\n\nNejde vrátit.')) return;

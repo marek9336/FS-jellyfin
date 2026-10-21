@@ -206,7 +206,7 @@ public sealed class FastshareClient
     /// Hledání přes víc stránek (Hlídač, automatický výběr). Končí, když další stránka
     /// nic nepřinese nebo dojde `maxPages`.
     /// </summary>
-    public async Task<List<FsFile>> SearchAllAsync(string term, bool adult, int maxPages, CancellationToken ct, SearchGate? gate = null, Action<DateTime>? onWait = null)
+    public async Task<List<FsFile>> SearchAllAsync(string term, bool adult, int maxPages, CancellationToken ct, SearchGate? gate = null, Action<DateTime>? onWait = null, Action<int>? onTotalPages = null)
     {
         var all = new List<FsFile>();
         var seen = new HashSet<string>();
@@ -219,6 +219,7 @@ public sealed class FastshareClient
             }
 
             var r = await SearchAsync(term, page, adult, ct).ConfigureAwait(false);
+            onTotalPages?.Invoke(r.TotalPages);
             var added = 0;
             foreach (var f in r.Files)
             {

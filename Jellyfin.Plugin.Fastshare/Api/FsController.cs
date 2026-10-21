@@ -1080,6 +1080,66 @@ public class FsController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 🔧 Seriál: všechny neočíslované díly s jistým odhadem (TMDb díl zná a název souboru mu neodporuje)
+    /// přesunout a přejmenovat na „Seriál - SxxEyy". Nejisté odhady zůstanou na ruční kontrolu.
+    /// </summary>
+    [HttpPost("Suggestions/Series/{seriesId}/FixGuessed")]
+    public ActionResult FixGuessed([FromRoute] string seriesId)
+    {
+        var todo = _state.Suggestions.GetAll()
+            .Where(x => x.SeriesId == seriesId && x.Kind == "episode" && x.Status == "new" && x.Episode == null)
+            .SelectMany(x => x.Versions.Where(v => v.FileGuessSure && v.FileEpisode != null && System.IO.File.Exists(v.Path))
+                .Select(v => (Sug: x, Path: v.Path, Season: v.FileSeason ?? 1, Episode: v.FileEpisode!.Value)))
+            .ToList();
+        if (todo.Count == 0)
+        {
+            return Ok(new { success = false, message = "Žádný díl s jistým odhadem." });
+        }
+
+        var series = todo[0].Sug.SeriesName ?? todo[0].Sug.Title;
+        var dirs = todo.Select(t => t.Season).Distinct().ToDictionary(n => n, n => Advisor.SeasonDirFor(seriesId, n));
+        var roots = Advisor.LibraryRoots();
+        var keys = new[] { "ser:" + seriesId }.Concat(todo.Select(t => "sug:" + t.Sug.Id)).Concat(todo.Select(t => "path:" + t.Path));
+        return RunFileOp(keys, $"⏳ Zařazuji {todo.Count} dílů seriálu {series}…", () =>
+        {
+            var moved = 0;
+            var failed = new List<string>();
+            foreach (var t in todo)
+            {
+                var dir = dirs[t.Season] ?? Path.Combine(LibraryAdvisor.SeriesRoot(t.Path), $"Season {t.Season:D2}");
+                try
+                {
+                    var to = LibraryFiles.MoveVideo(t.Path, dir, EpName(series, t.Season, t.Episode), roots);
+                    moved++;
+                    _state.Suggestions.Update(t.Sug.Id, x =>
+                    {
+                        x.Versions = x.Versions.Where(y => y.Path != t.Path).ToList();
+                        x.DeletePaths = x.DeletePaths.Where(p => p != t.Path).ToList();
+                        x.Note = "Zařazeno jako " + Path.GetFileName(to);
+                        if (x.Versions.Count == 0)
+                        {
+                            x.Status = "done";
+                            x.DecidedUtc = DateTime.UtcNow;
+                        }
+                    });
+                }
+                catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+                {
+                    failed.Add(Path.GetFileName(t.Path) + ": " + ex.Message);
+                }
+            }
+
+            _logger.LogInformation("Fastshare: {Series} — zařazeno {Moved} odhadnutých dílů, chyby {Failed}", series, moved, failed.Count);
+            if (failed.Count > 0)
+            {
+                throw new IOException($"zařazeno {moved}, nepovedlo se: " + string.Join("; ", failed.Take(5)));
+            }
+
+            return string.Empty;
+        });
+    }
+
     public sealed class SeriesBulkRequest
     {
         public bool Replace { get; set; } = true;
