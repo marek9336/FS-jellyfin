@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "0.2.0.0",
+        "changelog": "Viz https://github.com/marek9336/FS-jellyfin/releases/tag/v0.2.0",
+        "targetAbi": "12.0.0.0",
+        "sourceUrl": "https://github.com/marek9336/FS-jellyfin/releases/download/v0.2.0/fastshare_0.2.0.0.zip",
+        "checksum": "ec81218fb3c975a9e70699a1d4e4c9f5",
+        "timestamp": "2026-10-21T10:29:34Z"
+      },
+      {
         "version": "0.1.0.0",
         "changelog": "Viz https://github.com/marek9336/FS-jellyfin/releases/tag/v0.1.0",
         "targetAbi": "12.0.0.0",
