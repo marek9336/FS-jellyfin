@@ -21,6 +21,28 @@ public class LibraryVersion
 
     /// <summary>Datový tok v bitech/s (velikost / délka), když je délka známá.</summary>
     public long? Bitrate { get; set; }
+
+    /// <summary>Délka videa v sekundách.</summary>
+    public int? DurationSec { get; set; }
+
+    /// <summary>
+    /// Soubor podle svého názvu nesedí k položce (Jellyfin ho špatně identifikoval: „Titanic (1997)"
+    /// jako verze Thora, „05x01" jako S01E02). Taková verze se nikdy předem nezaškrtne ke smazání.
+    /// </summary>
+    public string? Suspect { get; set; }
+
+    /// <summary>Délka se od nejlepší verze liší o víc než 5 minut (prodloužená / zkrácená verze).</summary>
+    public string? LengthNote { get; set; }
+
+    /// <summary>Řada a díl podle názvu souboru (oprava čísla dílu).</summary>
+    public int? FileSeason { get; set; }
+
+    public int? FileEpisode { get; set; }
+
+    /// <summary>Název a rok podle názvu souboru (pro identifikaci špatně zařazeného souboru).</summary>
+    public string? FileTitle { get; set; }
+
+    public int? FileYear { get; set; }
 }
 
 /// <summary>Kandidát ke stažení z Fastshare.</summary>
@@ -137,6 +159,14 @@ public class SeriesSummary
 
     /// <summary>Kolik místa uvolní smazání horších verzí dílů.</summary>
     public long SavingsBytes { get; set; }
+
+    /// <summary>TMDb ID seriálu — stejné ID u dvou seriálů = tentýž seriál ve dvou složkách.</summary>
+    public string? TmdbId { get; set; }
+
+    public string? OriginalTitle { get; set; }
+
+    /// <summary>Složky, ve kterých díly seriálu leží.</summary>
+    public List<string> Folders { get; set; } = new();
 }
 
 /// <summary>Stav kontroly knihovny pro GUI.</summary>

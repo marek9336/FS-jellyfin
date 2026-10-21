@@ -127,6 +127,68 @@ public sealed class LibraryTests : IDisposable
         Assert.Equal("Fontána pre Zuzanu 3", f.Title);
     }
 
+    // Skutečné případy z knihovny (22. 10. 2026)
+    [Theory]
+    [InlineData("/Filmy/Marvel/THOR/08. Thor The Dark World (2013).mkv", false)]
+    [InlineData("/Filmy/Thor Temný svět.mkv", false)]
+    [InlineData("/Filmy/Titanic (Katastrofický, Drama, USA, 1997).avi", true)]
+    [InlineData("/Filmy/Chernobyl.S01E03.Open.Wide.O.Earth.CZ.avi", true)]
+    public void MovieSuspectThor(string path, bool suspect)
+    {
+        var v = new LibraryVersion { Path = path };
+        var why = LibraryFiles.MovieSuspect(v, "Thor: Temný svět", "Thor: The Dark World", 2013);
+        Assert.Equal(suspect, why != null);
+    }
+
+    [Theory]
+    [InlineData("/Serialy/červený trpaslík/Červený-trpaslík-05x01-Hololoď-(Holoship)-.Title2.avi", true)]
+    [InlineData("/Serialy/červený trpaslík/Červený-trpaslík-01x02-Ozvěny-budoucnosti-(Future-Echoes).avi", false)]
+    [InlineData("/Serialy/červený trpaslík/Season 01/Epizoda bez čísla.avi", false)]
+    public void EpisodeSuspectRedDwarf(string path, bool suspect)
+    {
+        var v = new LibraryVersion { Path = path };
+        Assert.Equal(suspect, LibraryFiles.EpisodeSuspect(v, 1, 2) != null);
+        if (suspect)
+        {
+            Assert.Equal(5, v.FileSeason);
+            Assert.Equal(1, v.FileEpisode);
+        }
+    }
+
+    [Fact]
+    public void SuspectAndLongerVersionsNotPreselected()
+    {
+        var best = new LibraryVersion { Path = "a", DurationSec = 7000 };
+        var worseSame = new LibraryVersion { Path = "b", DurationSec = 7050 };
+        var extended = new LibraryVersion { Path = "c", DurationSec = 8200 };
+        var wrong = new LibraryVersion { Path = "d", DurationSec = 7000, Suspect = "jiný film" };
+        var list = new List<LibraryVersion> { best, worseSame, extended, wrong };
+        LibraryFiles.MarkLengths(list);
+        Assert.Null(worseSame.LengthNote);
+        Assert.Contains("delší", extended.LengthNote);
+        Assert.Equal(["b"], LibraryFiles.DefaultDelete(list));
+    }
+
+    [Fact]
+    public void MoveEpisodeFromMoviesWithSubtitles()
+    {
+        var movies = Path.Combine(_root, "Filmy");
+        var series = Path.Combine(_root, "Serialy");
+        Directory.CreateDirectory(movies);
+        var src = Path.Combine(movies, "Chernobyl.S01E03.Open.Wide.O.Earth.CZ.avi");
+        File.WriteAllText(src, "x");
+        File.WriteAllText(Path.Combine(movies, "Chernobyl.S01E03.Open.Wide.O.Earth.CZ.cs.srt"), "x");
+        File.WriteAllText(Path.Combine(movies, "Jiny film.avi"), "x");
+
+        var dest = Path.Combine(series, "Černobyl", "Season 01");
+        var moved = LibraryFiles.MoveVideo(src, dest, "Černobyl - S01E03", [movies, series]);
+        Assert.Equal(Path.Combine(dest, "Černobyl - S01E03.avi"), moved);
+        Assert.True(File.Exists(Path.Combine(dest, "Černobyl - S01E03.cs.srt")));
+        Assert.False(File.Exists(src));
+        Assert.True(File.Exists(Path.Combine(movies, "Jiny film.avi")));
+        Assert.Throws<InvalidOperationException>(() => LibraryFiles.MoveVideo(moved, Path.Combine(_root, "jinde"), null, [movies, series]));
+    }
+
     [Fact]
     public void MinQualityFiltersCandidates()
     {

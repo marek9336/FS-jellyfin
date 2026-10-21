@@ -743,7 +743,211 @@ public class FsController : ControllerBase
         return Ok(new { success = failed.Count == 0, message = $"Smazáno {deleted} {(deleted == 1 ? "verze" : "verzí")}." + (failed.Count > 0 ? " Něco se smazat nepovedlo." : string.Empty) });
     }
 
+    /// <summary>🚚 Díl seriálu ve Filmech → přesunout do složky řady seriálu (Jellyfin ho pak zařadí sám).</summary>
+    [HttpPost("Suggestions/{id}/Move")]
+    public ActionResult MoveMisplaced([FromRoute] string id)
+    {
+        var s = _state.Suggestions.Get(id);
+        if (s is not { Kind: "misplaced" } || s.Versions.Count == 0 || string.IsNullOrEmpty(s.TargetDir))
+        {
+            return NotFound(new { success = false, message = "Návrh nemá kam přesunout." });
+        }
+
+        try
+        {
+            var name = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{s.SeriesName ?? s.Title} - S{s.Season ?? 1:D2}E{s.Episode ?? 1:D2}");
+            var moved = LibraryFiles.MoveVideo(s.Versions[0].Path, s.TargetDir, name, Advisor.LibraryRoots());
+            _logger.LogInformation("Fastshare: přesunuto {From} → {To}", s.Versions[0].Path, moved);
+            _state.Suggestions.Update(id, x =>
+            {
+                x.Status = "done";
+                x.DecidedUtc = DateTime.UtcNow;
+                x.Note = "Přesunuto do " + moved;
+            });
+            QueueScan();
+            return Ok(new { success = true, message = "Přesunuto do " + moved });
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            return Ok(new { success = false, message = "Přesun selhal: " + ex.Message });
+        }
+    }
+
+    public sealed class PathRequest
+    {
+        public string Path { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// 🔧 Soubor dílu má podle názvu jiné SxxEyy, než mu dal Jellyfin („05x01" jako S01E02) → přesunout
+    /// do správné řady pod jednoznačným názvem „Seriál - S05E01", ať ho Jellyfin zařadí správně.
+    /// </summary>
+    [HttpPost("Suggestions/{id}/FixEpisode")]
+    public ActionResult FixEpisode([FromRoute] string id, [FromBody] PathRequest r)
+    {
+        var s = _state.Suggestions.Get(id);
+        var v = s?.Versions.FirstOrDefault(x => x.Path == r.Path);
+        if (s?.SeriesId == null || v?.FileEpisode == null)
+        {
+            return NotFound(new { success = false, message = "Soubor v návrhu není nebo nemá číslo dílu v názvu." });
+        }
+
+        var season = v.FileSeason ?? s.Season ?? 1;
+        try
+        {
+            var dir = Advisor.SeasonDirFor(s.SeriesId, season) ?? Path.Combine(Path.GetDirectoryName(v.Path)!, $"Season {season:D2}");
+            var name = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{s.SeriesName} - S{season:D2}E{v.FileEpisode:D2}");
+            var moved = LibraryFiles.MoveVideo(v.Path, dir, name, Advisor.LibraryRoots());
+            _state.Suggestions.Update(id, x =>
+            {
+                x.Versions = x.Versions.Where(y => y.Path != v.Path).ToList();
+                x.DeletePaths = x.DeletePaths.Where(p => p != v.Path).ToList();
+                x.Note = "Přesunuto jako " + Path.GetFileName(moved);
+                if (x.Versions.Count <= 1 && x.Versions.All(y => y.Suspect == null))
+                {
+                    x.Status = "done";
+                }
+            });
+            QueueScan();
+            return Ok(new { success = true, message = "Přesunuto do " + moved + " — Jellyfin ho zařadí jako S" + season.ToString("D2", System.Globalization.CultureInfo.InvariantCulture) + "E" + v.FileEpisode.Value.ToString("D2", System.Globalization.CultureInfo.InvariantCulture) });
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            return Ok(new { success = false, message = "Přesun selhal: " + ex.Message });
+        }
+    }
+
+    /// <summary>Verze do návrhu nepatří (jiný film, opravený v Jellyfinu) → jen ji z návrhu vyřadit, nic nemazat.</summary>
+    [HttpPost("Suggestions/{id}/DropVersion")]
+    public ActionResult DropVersion([FromRoute] string id, [FromBody] PathRequest r)
+    {
+        _state.Suggestions.Update(id, x =>
+        {
+            x.Versions = x.Versions.Where(v => v.Path != r.Path).ToList();
+            x.DeletePaths = x.DeletePaths.Where(p => p != r.Path).ToList();
+            x.Note = "Vyřazeno: " + Path.GetFileName(r.Path);
+            if (x.Versions.Count <= 1)
+            {
+                x.Status = "done";
+            }
+        });
+        return Ok(new { success = true, message = "Vyřazeno z návrhu." });
+    }
+
     // ── Seriály ───────────────────────────────────────────────────
+    /// <summary>🗑 Smazat celý seriál (všechny díly a verze). GUI se předem ptá s počtem a velikostí.</summary>
+    [HttpPost("Suggestions/Series/{seriesId}/Delete")]
+    public ActionResult DeleteSeries([FromRoute] string seriesId)
+    {
+        var files = Advisor.SeriesFiles(seriesId);
+        if (files.Count == 0)
+        {
+            return NotFound(new { success = false, message = "Seriál nemá žádné soubory." });
+        }
+
+        var folders = files.Select(f => LibraryAdvisor.SeriesRoot(f.Version.Path)).Distinct(StringComparer.Ordinal).ToList();
+        var (deleted, failed) = Delete(files.Select(f => f.Version.Path).ToList());
+        var roots = Advisor.LibraryRoots();
+        foreach (var dir in folders.Where(d => Directory.Exists(d) && LibraryFiles.IsInsideLibrary(Path.Combine(d, "x"), roots)
+                                               && !roots.Any(r => string.Equals(Path.GetFullPath(r).TrimEnd('/'), Path.GetFullPath(d).TrimEnd('/'), StringComparison.Ordinal))))
+        {
+            try
+            {
+                // složka seriálu bez videí (zbyly plakáty, nfo) → pryč
+                if (!Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Any(f => Parsed(Path.GetFileName(f)).IsVideo))
+                {
+                    Directory.Delete(dir, true);
+                }
+            }
+            catch (IOException ex)
+            {
+                _logger.LogWarning("Fastshare: složku {Dir} se nepodařilo smazat: {Msg}", dir, ex.Message);
+            }
+        }
+
+        foreach (var x in _state.Suggestions.GetAll().Where(x => x.SeriesId == seriesId && x.Status == "new"))
+        {
+            _state.Suggestions.Update(x.Id, y =>
+            {
+                y.Status = "done";
+                y.Note = "Seriál smazán";
+            });
+        }
+
+        QueueScan();
+        return Ok(new { success = failed.Count == 0, message = $"Smazáno {deleted} souborů seriálu." + (failed.Count > 0 ? $" {failed.Count} se smazat nepovedlo." : string.Empty) });
+    }
+
+    public sealed class MergeSeriesRequest
+    {
+        /// <summary>Seriál, jehož díly se přesunou…</summary>
+        public string From { get; set; } = string.Empty;
+
+        /// <summary>…do složek tohoto seriálu.</summary>
+        public string To { get; set; } = string.Empty;
+    }
+
+    /// <summary>👯 Stejný seriál ve dvou složkách → přesunout díly jednoho do složek řad druhého.</summary>
+    [HttpPost("Suggestions/Series/Merge")]
+    public ActionResult MergeSeries([FromBody] MergeSeriesRequest r)
+    {
+        if (string.IsNullOrEmpty(r.From) || string.IsNullOrEmpty(r.To) || r.From == r.To)
+        {
+            return BadRequest(new { success = false, message = "Vyber dva různé seriály." });
+        }
+
+        var roots = Advisor.LibraryRoots();
+        var files = Advisor.SeriesFiles(r.From);
+        var oldFolders = files.Select(f => LibraryAdvisor.SeriesRoot(f.Version.Path)).Distinct(StringComparer.Ordinal).ToList();
+        var moved = 0;
+        var failed = new List<string>();
+        var dirs = new Dictionary<int, string?>();
+        foreach (var (ep, v) in files)
+        {
+            var season = ep.ParentIndexNumber ?? 1;
+            if (!dirs.TryGetValue(season, out var dir))
+            {
+                dir = Advisor.SeasonDirFor(r.To, season);
+                dirs[season] = dir;
+            }
+
+            if (dir == null)
+            {
+                failed.Add(Path.GetFileName(v.Path) + ": cílový seriál nemá složku");
+                continue;
+            }
+
+            try
+            {
+                LibraryFiles.MoveVideo(v.Path, dir, null, roots);
+                moved++;
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+            {
+                failed.Add(Path.GetFileName(v.Path) + ": " + ex.Message);
+            }
+        }
+
+        // prázdné složky po přesunu (zbyly plakáty, nfo) pryč
+        foreach (var dir in oldFolders.Where(Directory.Exists))
+        {
+            if (!roots.Any(x => string.Equals(Path.GetFullPath(x).TrimEnd('/'), Path.GetFullPath(dir).TrimEnd('/'), StringComparison.Ordinal))
+                && !Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Any(f => Parsed(Path.GetFileName(f)).IsVideo))
+            {
+                try
+                {
+                    Directory.Delete(dir, true);
+                }
+                catch (IOException)
+                {
+                }
+            }
+        }
+
+        QueueScan();
+        return Ok(new { success = failed.Count == 0, message = $"Přesunuto {moved} dílů." + (failed.Count > 0 ? " Nepovedlo se: " + string.Join("; ", failed.Take(5)) : string.Empty) });
+    }
+
     public sealed class SeriesBulkRequest
     {
         public bool Replace { get; set; } = true;

@@ -835,7 +835,7 @@
         // Seznam se překresluje JEN po akci uživatele (filtr, řazení, tlačítko) — časovač obnovuje
         // jen stav kontroly a počty, jinak by přepsal rozepsaný název u „Bez metadat".
         var sugTimer = null, sugData = null, sugFilter = 'upgrade', sugSig = '', openSeries = {};
-        var KIND = { upgrade: '⬆️ Lepší verze', duplicate: '👯 Duplicity', series: '📺 Seriály', identify: '🏷 Bez metadat', decided: '✔ Vyřízené' };
+        var KIND = { upgrade: '⬆️ Lepší verze', duplicate: '👯 Duplicity', series: '📺 Seriály', misplaced: '🚚 Přesunout', identify: '🏷 Bez metadat', decided: '✔ Vyřízené' };
 
         function startSugTimer() { stopSugTimer(); sugTimer = setInterval(function () { loadSuggest(true); }, 5000); }
 
@@ -862,10 +862,23 @@
             var res = v.Width ? v.Width + '×' + v.Height : 'rozlišení ?';
             var check = selectable
                 ? '<label style="display:inline-flex; align-items:center; gap:.25em; margin-right:.4em;" title="Zaškrtnuté verze se smažou">'
-                    + '<input type="checkbox" class="s-del" data-path="' + esc(v.Path) + '"' + (i > 0 ? ' checked' : '') + '> smazat</label>'
-                : (i === 0 ? '' : '');
+                    + '<input type="checkbox" class="s-del" data-path="' + esc(v.Path) + '"' + ((x.DeletePaths || []).indexOf(v.Path) >= 0 ? ' checked' : '') + '> smazat</label>'
+                : '';
+            var fix = '';
+            if (v.Suspect) {
+                fix = '<div class="fs-sub" style="opacity:1; color:#ffb74d; margin-left:1.6em;">⚠️ ' + esc(v.Suspect) + ' '
+                    + (x.Kind === 'episode' && v.FileEpisode != null
+                        ? '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="fixEpisode" data-path="' + esc(v.Path) + '" title="Přesune soubor do správné řady jako „' + esc(x.SeriesName) + ' - S' + pad2(v.FileSeason || x.Season || 1) + 'E' + pad2(v.FileEpisode) + '“">🔧 Zařadit jako S' + pad2(v.FileSeason || x.Season || 1) + 'E' + pad2(v.FileEpisode) + '</button>'
+                        : (x.Kind !== 'episode' ? '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="otherMovie" data-path="' + esc(v.Path) + '" title="Oddělí soubor od filmu a najde ho v TMDb pod správným názvem">🔧 Je to jiný film</button>' : ''))
+                    + ' <button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="drop" data-path="' + esc(v.Path) + '" title="Jen vyřadit z návrhu (nic se nesmaže)">vyřadit z návrhu</button></div>'
+                    + '<div class="s-vfix" data-path="' + esc(v.Path) + '"></div>';
+            }
             return '<div class="fs-sub">' + check + (i === 0 ? '⭐ ' : '') + '<span class="fs-badge fs-b-q">' + esc(v.Quality || '?') + '</span>'
-                + '<span class="fs-badge">' + res + '</span><span class="fs-badge">' + fmtBytes(v.SizeBytes) + '</span> ' + esc(v.Path) + '</div>';
+                + '<span class="fs-badge">' + res + '</span><span class="fs-badge">' + fmtBytes(v.SizeBytes) + '</span>'
+                + (v.DurationSec ? '<span class="fs-badge">⏱ ' + fmtDuration(v.DurationSec) + '</span>' : '')
+                + ' ' + esc(v.Path) + '</div>'
+                + (v.LengthNote ? '<div class="fs-sub" style="opacity:1; color:#90caf9; margin-left:1.6em;">⏱ ' + esc(v.LengthNote) + ' — nezaškrtnuto</div>' : '')
+                + fix;
         }
 
         function candLine(c) {
@@ -887,7 +900,7 @@
             el('fsSugStop').classList.toggle('hide', !st.running);
             el('fsSugScan').disabled = st.running;
             el('fsSugScanAll').disabled = st.running;
-            var counts = { upgrade: 0, duplicate: 0, series: 0, identify: 0, decided: 0 };
+            var counts = { upgrade: 0, duplicate: 0, series: 0, misplaced: 0, identify: 0, decided: 0 };
             sugData.items.forEach(function (x) {
                 if (x.Status !== 'new') counts.decided++;
                 else if (x.Kind === 'episode' || x.Kind === 'missing') counts.series++;
@@ -923,6 +936,17 @@
                 + (x.Kind === 'episode' && x.TargetQuality ? ' <span style="opacity:.6; font-weight:normal;">· cíl ' + esc(x.TargetQuality) + '</span>' : '') + '</div>';
             var body = '', actions = '';
             var multi = x.Versions.length > 1;
+            if (x.Kind === 'misplaced' && x.Status === 'new') {
+                head = '<div class="fs-name">🚚 ' + esc(x.SeriesName || x.Title) + ' ' + epTag(x.Season || 0, x.Episode || 0) + '</div>';
+                body = x.Versions.map(function (v, i) { return verRow(x, v, 1, false); }).join('')
+                    + '<div class="fs-sub">díl seriálu ve Filmech · ' + esc(x.Note || '') + '</div>'
+                    + '<div class="fs-sub">➡️ přesune se do <strong>' + esc(x.TargetDir || '?') + '</strong> jako „' + esc((x.SeriesName || x.Title) + ' - ' + epTag(x.Season || 1, x.Episode || 1)) + '“</div>';
+                actions = '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="move">🚚 Přesunout do Seriálů</button>'
+                    + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="Nechat ve Filmech">✋ Nechat</button>'
+                    + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Smazat soubor">🗑</button>';
+                return '<div class="fs-row" data-id="' + esc(x.Id) + '"><div class="fs-main">' + head + body + '<div class="s-msg fs-msg"></div></div>'
+                    + '<div style="display:flex; gap:.3em; flex-wrap:wrap; align-items:center;">' + actions + '</div></div>';
+            }
             if (x.Kind === 'missing' && x.Status === 'new') {
                 head = '<div class="fs-name">❓ ' + esc(x.SeriesName || x.Title) + ' ' + epTag(x.Season || 0, x.Episode || 0)
                     + (x.EpisodeName ? ' <span style="font-weight:normal;">— ' + esc(x.EpisodeName) + '</span>' : '')
@@ -987,6 +1011,7 @@
                 + (withC ? '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;"><input type="checkbox" class="s-sreplace" checked> nahradit</label>'
                     + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="downloadAll">⬇️ Stáhnout všech ' + withC + '</button>' : '')
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="rejectAll" title="Kvalita seriálu stačí — nenavrhovat jeho díly">✋ Celý seriál nechat</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="deleteSeries" title="Smazat všechny díly seriálu z disku">🗑 Smazat celý seriál</button>'
                 + (sum.Missing ? '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="' + (sum.FindMissing ? 'missingOff' : 'missingOn') + '" title="Hledat chybějící díly na Fastshare v kvalitě ' + esc(sum.Target) + ' (když není, nejlepší nižší)">'
                     + (sum.FindMissing ? '⏹ Nedohledávat chybějící' : '🔍 Dohledat ' + sum.Missing + ' chybějících') + '</button>' : '')
                 + (missC ? '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="downloadMissing">⬇️ Stáhnout ' + missC + ' nalezených chybějících</button>' : '')
@@ -1004,6 +1029,23 @@
                 sugData.items.forEach(function (x) { if ((x.Kind === 'episode' || x.Kind === 'missing') && x.Status === 'new' && (!onlyC || x.Candidate)) (byS[x.SeriesId] = byS[x.SeriesId] || []).push(x); });
                 var sums = (sugData.series || []).filter(function (s) { return byS[s.SeriesId] || (!onlyC && s.Missing > 0); });
                 sums.forEach(function (s) { byS[s.SeriesId] = byS[s.SeriesId] || []; });
+                // Stejný seriál ve víc složkách (stejné TMDb ID, nebo stejný název)
+                var groupsS = {};
+                (sugData.series || []).forEach(function (s) {
+                    var k = s.TmdbId ? 'tmdb:' + s.TmdbId : 'nm:' + s.Name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+                    (groupsS[k] = groupsS[k] || []).push(s);
+                });
+                Object.keys(groupsS).forEach(function (k) {
+                    var g = groupsS[k];
+                    if (g.length < 2) return;
+                    html += '<div class="fs-card fs-sdup" style="border-left:3px solid #ffb74d;">👯 <strong>' + esc(g[0].Name) + '</strong> je v knihovně ' + g.length + '× — '
+                        + g.map(function (s) { return esc(s.Name) + ' (' + s.Episodes + ' dílů: ' + esc((s.Folders || []).join(', ')) + ')'; }).join(' · ')
+                        + '<div style="display:flex; gap:.4em; flex-wrap:wrap; margin-top:.5em;">'
+                        + g.map(function (to) {
+                            var from = g.filter(function (s) { return s.SeriesId !== to.SeriesId; })[0];
+                            return '<button is="emby-button" type="button" class="raised fs-btn s-merge" data-from="' + from.SeriesId + '" data-to="' + to.SeriesId + '">Sloučit do ' + esc((to.Folders || [to.Name])[0]) + '</button>';
+                        }).join('') + '</div><div class="fs-msg s-mmsg"></div></div>';
+                });
                 if ((sugData.series || []).some(function (s) { return s.Missing == null; })) {
                     html += '<div class="fs-card" id="fsMissSetup">❓ <strong>Chybějící díly</strong> eviduje TMDb plugin Jellyfinu („Importovat chybějící epizody“), teď je vypnutý. '
                         + 'Po zapnutí Jellyfin u každého seriálu doplní seznam dílů z TMDb (v knihovně je neuvidíš, dokud si nezapneš „Zobrazovat chybějící epizody“) '
@@ -1035,6 +1077,19 @@
             }
             el('fsSugList').innerHTML = html;
             if (el('fsMissEnable')) el('fsMissEnable').addEventListener('click', enableMissing);
+            el('fsSugList').querySelectorAll('.s-merge').forEach(function (b) {
+                b.addEventListener('click', function () {
+                    if (!confirm('Přesunout všechny díly do „' + b.textContent.replace('Sloučit do ', '') + '“? Soubory se přesunou do složek řad, nic se nemaže.')) return;
+                    var msg = b.closest('.fs-sdup').querySelector('.s-mmsg');
+                    msg.textContent = 'Přesouvám…';
+                    api('POST', 'Suggestions/Series/Merge', { From: b.getAttribute('data-from'), To: b.getAttribute('data-to') }).then(function (r) {
+                        msg.textContent = (r.success ? '✅ ' : '⚠️ ') + r.message + ' Po skenu knihovny klikni na „Projít knihovnu“.';
+                    }, function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Sloučení selhalo.'); });
+                });
+            });
+            el('fsSugList').querySelectorAll('.s-vact').forEach(function (b) {
+                b.addEventListener('click', function () { versionAction(b.closest('.fs-row'), b.getAttribute('data-vact'), b.getAttribute('data-path')); });
+            });
             el('fsSugList').querySelectorAll('.s-act').forEach(function (btn) {
                 btn.addEventListener('click', function () { sugAction(btn.closest('.fs-row'), btn.getAttribute('data-act')); });
             });
@@ -1056,6 +1111,10 @@
             if (act === 'downloadAll') {
                 var repl = d.querySelector('.s-sreplace');
                 api('POST', 'Suggestions/Series/' + sid + '/DownloadAll', { Replace: !!(repl && repl.checked) }).then(function (r) { Dashboard.alert(r.message); loadSuggest(false); });
+            } else if (act === 'deleteSeries') {
+                var sum = (sugData.series || []).filter(function (x) { return x.SeriesId === sid; })[0] || {};
+                if (!confirm('Smazat CELÝ seriál „' + sum.Name + '“ (' + sum.Episodes + ' dílů) z disku?\n\n' + (sum.Folders || []).join('\n') + '\n\nNejde vrátit.')) return;
+                api('POST', 'Suggestions/Series/' + sid + '/Delete').then(function (r) { Dashboard.alert(r.message); loadSuggest(false); });
             } else if (act === 'missingOn' || act === 'missingOff') {
                 api('POST', 'Suggestions/Series/' + sid + '/FindMissing', { Enable: act === 'missingOn' }).then(function (r) { Dashboard.alert(r.message); loadSuggest(false); });
             } else if (act === 'downloadMissing') {
@@ -1110,6 +1169,8 @@
                 api('POST', 'Suggestions/' + enc + '/Download', { Replace: !!(repl && repl.checked) }).then(done, fail);
             } else if (act === 'reject') {
                 api('POST', 'Suggestions/' + enc + '/Reject', {}).then(done, fail);
+            } else if (act === 'move') {
+                api('POST', 'Suggestions/' + enc + '/Move').then(done, fail);
             } else if (act === 'reopen') {
                 api('POST', 'Suggestions/' + enc + '/Reopen').then(done, fail);
             } else if (act === 'deleteVersions') {
@@ -1126,8 +1187,50 @@
             }
         }
 
+        function versionAction(row, act, path) {
+            var id = row.getAttribute('data-id');
+            var x = sugData.items.filter(function (i) { return i.Id === id; })[0];
+            var v = x.Versions.filter(function (y) { return y.Path === path; })[0];
+            var msg = row.querySelector('.s-msg');
+            var enc = encodeURIComponent(id);
+            if (act === 'drop') {
+                api('POST', 'Suggestions/' + enc + '/DropVersion', { Path: path }).then(function () { loadSuggest(false); });
+            } else if (act === 'fixEpisode') {
+                api('POST', 'Suggestions/' + enc + '/FixEpisode', { Path: path }).then(function (r) {
+                    msg.textContent = (r.success ? '✅ ' : '⚠️ ') + r.message; setTimeout(function () { loadSuggest(false); }, 2500);
+                }, function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); });
+            } else if (act === 'otherMovie') {
+                // 1) oddělit sloučené verze (Jellyfin „Rozdělit verze"), 2) najít soubor v TMDb pod jeho názvem
+                var box = row.querySelector('.s-vfix[data-path="' + CSS.escape(path) + '"]');
+                box.innerHTML = '<div class="fs-msg">Odděluji soubor od filmu…</div>';
+                ApiClient.ajax({ type: 'DELETE', url: ApiClient.getUrl('Videos/' + x.ItemId + '/AlternateSources') }).then(next, next);
+                function next() {
+                    box.innerHTML = '<div class="fs-form" style="background:#151515;">'
+                        + '<div class="inputContainer" style="flex:1; min-width:200px;"><input is="emby-input" type="text" class="s-name" label="Co je to za film" value="' + esc(v.FileTitle || '') + '"></div>'
+                        + '<div class="inputContainer" style="width:90px;"><input is="emby-input" type="number" class="s-year" label="Rok" value="' + (v.FileYear || '') + '"></div>'
+                        + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-vfind">🔎 Najít</button></div><div class="s-results"></div>';
+                    box.querySelector('.s-vfind').addEventListener('click', function () {
+                        findMetaFor(box, v.ItemId, function (m) {
+                            api('POST', 'Suggestions/' + enc + '/DropVersion', { Path: path }).then(function () {
+                                box.innerHTML = '<div class="fs-msg">✅ Soubor je teď samostatně jako ' + esc(m.Name) + ' — vyřazen z návrhu.</div>';
+                                setTimeout(function () { loadSuggest(false); }, 2000);
+                            });
+                        });
+                    });
+                }
+            }
+        }
+
         // Identifikace přes vlastní hledání Jellyfinu (TMDb/OMDb) — totéž co „Identifikovat" v menu filmu
         function findMeta(row, x) {
+            findMetaFor(row, x.ItemId, function (m) {
+                return api('POST', 'Suggestions/' + encodeURIComponent(x.Id) + '/Identified', { Note: 'Identifikováno jako ' + m.Name + (m.ProductionYear ? ' (' + m.ProductionYear + ')' : '') })
+                    .then(function () { setTimeout(function () { loadSuggest(false); }, 1500); });
+            });
+        }
+
+        function findMetaFor(row, itemId, onApplied) {
+            var x = { ItemId: itemId };
             var out = row.querySelector('.s-results');
             out.innerHTML = '<div class="fs-msg">Hledám…</div>';
             var name = row.querySelector('.s-name').value.trim();
@@ -1153,8 +1256,8 @@
                             type: 'POST', url: ApiClient.getUrl('Items/RemoteSearch/Apply/' + x.ItemId, { replaceAllImages: true }),
                             contentType: 'application/json', data: JSON.stringify(m)
                         }).then(function () {
-                            api('POST', 'Suggestions/' + encodeURIComponent(x.Id) + '/Identified', { Note: 'Identifikováno jako ' + m.Name + (m.ProductionYear ? ' (' + m.ProductionYear + ')' : '') })
-                                .then(function () { out.innerHTML = '<div class="fs-msg">✅ Hotovo — plakát a herci se doplní během chvilky.</div>'; setTimeout(function () { loadSuggest(false); }, 1500); });
+                            out.innerHTML = '<div class="fs-msg">✅ Hotovo — plakát a herci se doplní během chvilky.</div>';
+                            onApplied(m);
                         }, function (xhr) { out.innerHTML = '<div class="fs-msg">❌ ' + esc(errMsg(xhr, 'Identifikace selhala.')) + '</div>'; });
                     });
                 });

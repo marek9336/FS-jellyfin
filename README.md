@@ -36,7 +36,12 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   - *chybějící díly*: eviduje je TMDb plugin Jellyfinu („Importovat chybějící epizody", v Navržených jde
     zapnout jedním tlačítkem); u seriálu se zapne „Dohledat chybějící" a díly se hledají v cílové kvalitě
     (když není, nejlepší nižší) a ukládají do složky řady,
-  - u víc verzí se zaškrtne, které smazat (Harry Potter: smazat SD, nechat 4K i Full HD),
+  - u víc verzí se zaškrtne, které smazat (Harry Potter: smazat SD, nechat 4K i Full HD); délka u každé verze,
+    jiná délka (prodloužená verze) se předem nezaškrtne,
+  - špatně zařazené soubory (Jellyfin dal „Titanic (1997)" k Thorovi, „05x01" jako S01E02) se označí ⚠️ a dají
+    se opravit: „Je to jiný film" (oddělit a najít v TMDb), „Zařadit jako S05E01" (přesun do správné řady),
+  - 🚚 díly seriálů ve Filmech → přesun do složky řady seriálu; stejný seriál ve dvou složkách → sloučit;
+    smazání celého seriálu,
   - řazení: nalezená lepší verze první, nejvíc ušetří místa, nejvíc kopií, od nejhorší / nejlepší kvality,
     velikost, název.
   Kontrola běží na pozadí (jednou týdně, nebo tlačítkem), automatická hledání mají strop (výchozí 20/h);
@@ -70,6 +75,4 @@ Vydání: tag `vX.Y.Z` → GitHub Actions spustí testy, sestaví zip, vytvoří
 - **Řazení podle lajků**: Fastshare palce nahoru eviduje a web podle nich řadí, ale API (to samé, co
   používá oficiální Kodi doplněk) je nevrací a webové hledání je chráněné tokenem z JavaScriptu.
   Plugin ho obcházet nebude — kdyby Fastshare hodnocení přidal do API, doplní se.
-
-## Plán
 

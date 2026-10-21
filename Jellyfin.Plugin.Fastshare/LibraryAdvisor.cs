@@ -182,9 +182,20 @@ public sealed class LibraryAdvisor : BackgroundService
         var groups = new Dictionary<string, MovieGroup>();
         var seenPaths = new HashSet<string>(StringComparer.Ordinal);
         var unidentified = new List<BaseItem>();
+        var misplaced = new List<(BaseItem Item, FsFile File)>();
         foreach (var item in movies)
         {
             ct.ThrowIfCancellationRequested();
+
+            // Díl seriálu, který se dostal do Filmů („/Filmy/Chernobyl.S01E03….avi") → návrh přesunu
+            var asFile = new FsFile { FileName = Path.GetFileName(item.Path ?? string.Empty) };
+            FileNameParser.Fill(asFile);
+            if (asFile.Episode != null && asFile.IsVideo)
+            {
+                misplaced.Add((item, asFile));
+                continue;
+            }
+
             var tmdb = item.GetProviderId(MetadataProvider.Tmdb);
             var imdb = item.GetProviderId(MetadataProvider.Imdb);
             if (string.IsNullOrEmpty(tmdb) && string.IsNullOrEmpty(imdb))
@@ -233,6 +244,12 @@ public sealed class LibraryAdvisor : BackgroundService
         {
             var best = LibraryFiles.BestFirst(g.Versions);
             var id = g.Main.Id.ToString("N");
+            foreach (var v in best)
+            {
+                v.Suspect = LibraryFiles.MovieSuspect(v, g.Main.Name, g.Main.OriginalTitle, g.Main.ProductionYear);
+            }
+
+            LibraryFiles.MarkLengths(best);
             Suggestion? dup = null;
             if (best.Count > 1)
             {
@@ -245,7 +262,7 @@ public sealed class LibraryAdvisor : BackgroundService
                     OriginalTitle = g.Main.OriginalTitle,
                     Year = g.Main.ProductionYear,
                     Versions = best,
-                    DeletePaths = best.Skip(1).Select(v => v.Path).ToList(),
+                    DeletePaths = LibraryFiles.DefaultDelete(best),
                 };
                 found.Add(dup);
             }
@@ -297,18 +314,30 @@ public sealed class LibraryAdvisor : BackgroundService
         // ── Seriály: sjednotit díly na převažující kvalitu ──
         Status.Phase = "Načítám seriály z knihovny";
         jobs.AddRange(CollectSeries(cfg, target, found, rejected, ct));
+        CollectMisplaced(misplaced, cfg, found);
 
         // Duplicity, filmy bez metadat a díly jsou hotové hned — uložit, ať jsou v GUI, i když
         // hledání lepších verzí poběží ještě dny
-        _state.Suggestions.Merge(found, new[] { "identify", "duplicate", "episode", "missing" });
+        _state.Suggestions.Merge(found, new[] { "identify", "duplicate", "episode", "missing", "misplaced" });
 
         // Pořadí: duplicity filmů → díly seriálů → lepší verze filmů; v rámci skupiny nejdéle nehledané
         var recheck = TimeSpan.FromDays(Math.Max(1, cfg.SuggestRecheckDays));
-        jobs = jobs
+        // Skupiny (duplicity filmů, díly seriálů, lepší verze filmů) se střídají — dřív šly za sebou
+        // a na filmy bez duplicit se při 20–60 hledáních za hodinu nedostalo celé dny
+        var queues = jobs
             .Where(j => !j.Skip)
-            .OrderBy(j => j.Priority)
-            .ThenBy(j => _state.Suggestions.UpgradeChecked(j.Key) ?? DateTime.MinValue)
+            .GroupBy(j => j.Priority)
+            .OrderBy(g => g.Key)
+            .Select(g => new Queue<SearchJob>(g.OrderBy(j => _state.Suggestions.UpgradeChecked(j.Key) ?? DateTime.MinValue)))
             .ToList();
+        jobs = new List<SearchJob>();
+        while (queues.Any(q => q.Count > 0))
+        {
+            foreach (var q in queues.Where(q => q.Count > 0))
+            {
+                jobs.Add(q.Dequeue());
+            }
+        }
 
         Status.Total = jobs.Count;
         Status.Done = 0;
@@ -352,7 +381,9 @@ public sealed class LibraryAdvisor : BackgroundService
         }
 
         // Neúplné hledání (výpadek) nesmí smazat dřívější návrhy lepších verzí, na které se nedostalo
-        _state.Suggestions.Merge(found, complete ? new[] { "identify", "duplicate", "episode", "missing", "upgrade" } : new[] { "identify", "duplicate", "episode", "missing" });
+        _state.Suggestions.Merge(found, complete
+            ? new[] { "identify", "duplicate", "episode", "missing", "misplaced", "upgrade" }
+            : new[] { "identify", "duplicate", "episode", "missing", "misplaced" });
         Status.Phase = null;
         var summary = string.Create(
             CultureInfo.InvariantCulture,
@@ -399,9 +430,11 @@ public sealed class LibraryAdvisor : BackgroundService
             var w = video?.Width ?? 0;
             var h = video?.Height ?? 0;
             var size = src.Size ?? (File.Exists(src.Path) ? new FileInfo(src.Path).Length : 0);
-            var seconds = item.RunTimeTicks is > 0 ? item.RunTimeTicks.Value / TimeSpan.TicksPerSecond : 0;
+            var ticks = src.RunTimeTicks is > 0 ? src.RunTimeTicks : item.RunTimeTicks;
+            var seconds = ticks is > 0 ? ticks.Value / TimeSpan.TicksPerSecond : 0;
             list.Add(new LibraryVersion
             {
+                DurationSec = seconds > 0 ? (int)seconds : null,
                 ItemId = Guid.TryParse(src.Id, out var sid) ? sid.ToString("N") : item.Id.ToString("N"),
                 Path = src.Path,
                 SizeBytes = size,
@@ -423,6 +456,7 @@ public sealed class LibraryAdvisor : BackgroundService
     private List<SearchJob> CollectSeries(PluginConfiguration cfg, string maxTarget, List<Suggestion> found, HashSet<string> rejected, CancellationToken ct)
     {
         var jobs = new List<SearchJob>();
+        _seriesEps.Clear();
         var episodes = _library.GetItemList(new InternalItemsQuery
         {
             IncludeItemTypes = [BaseItemKind.Episode],
@@ -474,17 +508,27 @@ public sealed class LibraryAdvisor : BackgroundService
                 MultiVersion = eps.Count(x => x.Versions.Count > 1),
                 SavingsBytes = eps.Sum(x => x.Versions.Skip(1).Sum(v => v.SizeBytes)),
                 FindMissing = _state.Suggestions.FindMissing(seriesId),
+                Folders = eps.Select(x => SeriesRoot(x.Versions[0].Path)).Distinct(StringComparer.Ordinal).ToList(),
             };
             summaries.Add(summary);
 
             BaseItem? seriesItem = _library.GetItemById(series.Key);
+            summary.TmdbId = seriesItem?.GetProviderId(MetadataProvider.Tmdb);
+            summary.OriginalTitle = seriesItem?.OriginalTitle;
+            _seriesEps[seriesId] = eps.Select(x => (x.Ep, x.Versions)).ToList();
             var titles = new[] { name, seriesItem?.OriginalTitle }.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             jobs.AddRange(CollectMissing(series.Key, seriesId, name, titles!, seriesItem, eps.Select(x => (x.Ep, x.Versions)).ToList(),
                 virtualBySeries, missingKnown, target, summary, found, rejected, cfg));
             foreach (var (ep, versions) in eps)
             {
+                foreach (var v in versions)
+                {
+                    v.Suspect = LibraryFiles.EpisodeSuspect(v, ep.ParentIndexNumber, ep.IndexNumber);
+                }
+
+                LibraryFiles.MarkLengths(versions);
                 var below = versions[0].Quality != null && LibraryFiles.Level(versions[0].Quality) < targetLevel;
-                if (!below && versions.Count < 2)
+                if (!below && versions.Count < 2 && versions.All(v => v.Suspect == null))
                 {
                     continue;
                 }
@@ -502,7 +546,7 @@ public sealed class LibraryAdvisor : BackgroundService
                     Episode = ep.IndexNumber,
                     TargetQuality = target,
                     Versions = versions,
-                    DeletePaths = versions.Skip(1).Select(v => v.Path).ToList(),
+                    DeletePaths = LibraryFiles.DefaultDelete(versions),
                 };
                 found.Add(sug);
 
@@ -528,7 +572,81 @@ public sealed class LibraryAdvisor : BackgroundService
         }
 
         _state.Suggestions.Series = summaries.OrderBy(x => x.Name, StringComparer.CurrentCulture).ToList();
+        _seriesItems = summaries;
         return jobs;
+    }
+
+    private readonly Dictionary<string, List<(Episode Ep, List<LibraryVersion> Versions)>> _seriesEps = new();
+    private List<SeriesSummary> _seriesItems = new();
+
+    /// <summary>Složka seriálu z cesty dílu (nad „Season 01" / „Série 1", jinak složka dílu).</summary>
+    public static string SeriesRoot(string episodePath)
+    {
+        var dir = Path.GetDirectoryName(episodePath) ?? string.Empty;
+        var name = Path.GetFileName(dir);
+        return name.StartsWith("Season", StringComparison.OrdinalIgnoreCase) || name.StartsWith("Série", StringComparison.OrdinalIgnoreCase)
+            || name.StartsWith("Serie", StringComparison.OrdinalIgnoreCase) || name.StartsWith("Řada", StringComparison.OrdinalIgnoreCase)
+            ? Path.GetDirectoryName(dir) ?? dir
+            : dir;
+    }
+
+    /// <summary>Díly seriálů ve Filmech: najít seriál v knihovně (název nebo původní název) a cílovou složku řady.</summary>
+    private void CollectMisplaced(List<(BaseItem Item, FsFile File)> misplaced, PluginConfiguration cfg, List<Suggestion> found)
+    {
+        foreach (var (item, file) in misplaced)
+        {
+            var series = _seriesItems.FirstOrDefault(sm =>
+                FileNameParser.Normalize(sm.Name) == FileNameParser.Normalize(file.Title)
+                || FileNameParser.Normalize(sm.OriginalTitle) == FileNameParser.Normalize(file.Title)
+                || LibraryFiles.TitlesOverlap(sm.OriginalTitle, file.Title) && LibraryFiles.TitlesOverlap(sm.Name, file.Title))
+                ?? _seriesItems.FirstOrDefault(sm => LibraryFiles.TitlesOverlap(sm.Name, file.Title) || LibraryFiles.TitlesOverlap(sm.OriginalTitle, file.Title));
+            var season = file.Season ?? 1;
+            string? dir;
+            if (series != null && _seriesEps.TryGetValue(series.SeriesId, out var eps))
+            {
+                dir = SeasonDir(eps, season, _library.GetItemById(Guid.Parse(series.SeriesId)));
+            }
+            else
+            {
+                dir = Path.Combine(cfg.SeriesPath, MediaOrganizer.Sanitize(file.Title), string.Create(CultureInfo.InvariantCulture, $"Season {season:D2}"));
+            }
+
+            var v = new LibraryVersion { ItemId = item.Id.ToString("N"), Path = item.Path!, SizeBytes = File.Exists(item.Path) ? new FileInfo(item.Path!).Length : 0 };
+            found.Add(new Suggestion
+            {
+                Id = "mov:" + item.Id.ToString("N"),
+                Kind = "misplaced",
+                ItemId = item.Id.ToString("N"),
+                Title = series?.Name ?? file.Title,
+                SeriesId = series?.SeriesId,
+                SeriesName = series?.Name ?? file.Title,
+                Season = season,
+                Episode = file.Episode,
+                TargetDir = dir,
+                Versions = new() { v },
+                Note = series != null ? $"patří k seriálu „{series.Name}“ v knihovně" : "seriál v knihovně zatím není — vznikne nová složka",
+            });
+        }
+    }
+
+    /// <summary>Všechny soubory dílů seriálu (i víc verzí) — pro smazání a sloučení seriálu.</summary>
+    public List<(Episode Ep, LibraryVersion Version)> SeriesFiles(string seriesId)
+    {
+        var guid = Guid.Parse(seriesId);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        return _library.GetItemList(new InternalItemsQuery { IncludeItemTypes = [BaseItemKind.Episode], Recursive = true, IsVirtualItem = false })
+            .OfType<Episode>()
+            .Where(e => e.SeriesId == guid)
+            .SelectMany(e => VersionsOf(e, seen).Select(v => (e, v)))
+            .ToList();
+    }
+
+    /// <summary>Složka řady seriálu pro přesun dílu (jako u chybějících dílů).</summary>
+    public string? SeasonDirFor(string seriesId, int season)
+    {
+        var files = SeriesFiles(seriesId);
+        var eps = files.GroupBy(f => f.Ep.Id).Select(g => (g.First().Ep, g.Select(x => x.Version).ToList())).ToList();
+        return SeasonDir(eps, season, _library.GetItemById(Guid.Parse(seriesId)));
     }
 
     /// <summary>
