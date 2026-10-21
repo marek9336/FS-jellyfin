@@ -592,6 +592,7 @@ public class FsController : ControllerBase
                 lastResult = st.LastResult ?? last.LastResult,
             },
             series = _state.Suggestions.Series,
+            fileOps = new { items = _state.FileOps("sug:"), series = _state.FileOps("ser:") },
             items = _state.Suggestions.GetAll()
                 .OrderBy(x => x.Status == "new" ? 0 : 1)
                 .ThenBy(x => x.Kind)
@@ -743,9 +744,64 @@ public class FsController : ControllerBase
         return Ok(new { success = failed.Count == 0, message = $"Smazáno {deleted} {(deleted == 1 ? "verze" : "verzí")}." + (failed.Count > 0 ? " Něco se smazat nepovedlo." : string.Empty) });
     }
 
+    /// <summary>
+    /// Přesun souborů na pozadí. Mezi Filmy a Seriály se kopíruje (jiné připojení) a 4 GB trvají minuty —
+    /// požadavek by visel a další kliknutí by pouštěla další kopie („S01E02 (23).mp4"). Klíče (návrh,
+    /// zdrojové soubory, seriál) drží zámek, dokud přesun běží; GUI stav čte z GET Suggestions (fileOps).
+    /// </summary>
+    private ActionResult RunFileOp(IEnumerable<string> keys, string text, Func<string> work, Action<string>? onSuccess = null)
+    {
+        var k = keys.Distinct(StringComparer.Ordinal).ToList();
+        var sources = k.Where(x => x.StartsWith("path:", StringComparison.Ordinal)).Select(x => x[5..]).ToList();
+        if (sources.Count > 0 && sources.All(x => !System.IO.File.Exists(x)))
+        {
+            return Ok(new { success = false, message = "Soubor už na původním místě není — nejspíš je přesunutý. Klikni na „Obnovit seznam“." });
+        }
+
+        if (!_state.TryStartFileOp(k, text))
+        {
+            return Ok(new { success = false, message = "Tenhle přesun už běží — počkej, až doběhne." });
+        }
+
+        _ = Task.Run(() =>
+        {
+            string? error = null;
+            try
+            {
+                var msg = work();
+                onSuccess?.Invoke(msg);
+            }
+            catch (Exception ex)
+            {
+                error = "⚠️ Přesun selhal: " + ex.Message;
+                _logger.LogWarning("Fastshare: přesun selhal: {Msg}", ex.Message);
+            }
+            finally
+            {
+                _state.EndFileOp(k, error);
+                QueueScan();
+            }
+        });
+        return Ok(new { success = true, background = true, message = text });
+    }
+
+    public sealed class EpisodeTarget
+    {
+        /// <summary>Soubor (verze) v návrhu.</summary>
+        public string? Path { get; set; }
+
+        /// <summary>Ručně zadaná řada a díl (jinak z návrhu / názvu souboru).</summary>
+        public int? Season { get; set; }
+
+        public int? Episode { get; set; }
+    }
+
+    private static string EpName(string series, int season, int episode) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{series} - S{season:D2}E{episode:D2}");
+
     /// <summary>🚚 Díl seriálu ve Filmech → přesunout do složky řady seriálu (Jellyfin ho pak zařadí sám).</summary>
     [HttpPost("Suggestions/{id}/Move")]
-    public ActionResult MoveMisplaced([FromRoute] string id)
+    public ActionResult MoveMisplaced([FromRoute] string id, [FromBody] EpisodeTarget? r)
     {
         var s = _state.Suggestions.Get(id);
         if (s is not { Kind: "misplaced" } || s.Versions.Count == 0 || string.IsNullOrEmpty(s.TargetDir))
@@ -753,24 +809,35 @@ public class FsController : ControllerBase
             return NotFound(new { success = false, message = "Návrh nemá kam přesunout." });
         }
 
-        try
+        var season = r?.Season is > 0 ? r.Season.Value : s.Season ?? 1;
+        var episode = r?.Episode is > 0 ? r.Episode.Value : s.Episode ?? 1;
+        var dir = s.TargetDir;
+        if (season != (s.Season ?? 1) && s.SeriesId != null)
         {
-            var name = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{s.SeriesName ?? s.Title} - S{s.Season ?? 1:D2}E{s.Episode ?? 1:D2}");
-            var moved = LibraryFiles.MoveVideo(s.Versions[0].Path, s.TargetDir, name, Advisor.LibraryRoots());
-            _logger.LogInformation("Fastshare: přesunuto {From} → {To}", s.Versions[0].Path, moved);
-            _state.Suggestions.Update(id, x =>
+            // jiná řada, než plugin odhadl → složka té řady
+            dir = Advisor.SeasonDirFor(s.SeriesId, season) ?? dir;
+        }
+        else if (season != (s.Season ?? 1))
+        {
+            dir = Path.Combine(Path.GetDirectoryName(dir)!, $"Season {season:D2}");
+        }
+
+        var src = s.Versions[0].Path;
+        var name = EpName(s.SeriesName ?? s.Title, season, episode);
+        return RunFileOp(
+            new[] { "sug:" + id, "path:" + src },
+            $"⏳ Přesouvám do {dir} jako „{name}“ — velký soubor se mezi Filmy a Seriály kopíruje, může to trvat i pár minut.",
+            () => LibraryFiles.MoveVideo(src, dir, name, Advisor.LibraryRoots()),
+            moved =>
             {
-                x.Status = "done";
-                x.DecidedUtc = DateTime.UtcNow;
-                x.Note = "Přesunuto do " + moved;
+                _logger.LogInformation("Fastshare: přesunuto {From} → {To}", src, moved);
+                _state.Suggestions.Update(id, x =>
+                {
+                    x.Status = "done";
+                    x.DecidedUtc = DateTime.UtcNow;
+                    x.Note = "Přesunuto do " + moved;
+                });
             });
-            QueueScan();
-            return Ok(new { success = true, message = "Přesunuto do " + moved });
-        }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
-        {
-            return Ok(new { success = false, message = "Přesun selhal: " + ex.Message });
-        }
     }
 
     public sealed class PathRequest
@@ -779,42 +846,95 @@ public class FsController : ControllerBase
     }
 
     /// <summary>
-    /// 🔧 Soubor dílu má podle názvu jiné SxxEyy, než mu dal Jellyfin („05x01" jako S01E02) → přesunout
-    /// do správné řady pod jednoznačným názvem „Seriál - S05E01", ať ho Jellyfin zařadí správně.
+    /// 🔧 Díl má špatné číslo („05x01" jako S01E02, „Černobyl E01" bez čísla) → přesunout do správné řady
+    /// pod jednoznačným názvem „Seriál - S05E01", ať ho Jellyfin zařadí správně. Řada a díl z názvu
+    /// souboru, nebo ručně z GUI.
     /// </summary>
     [HttpPost("Suggestions/{id}/FixEpisode")]
-    public ActionResult FixEpisode([FromRoute] string id, [FromBody] PathRequest r)
+    public ActionResult FixEpisode([FromRoute] string id, [FromBody] EpisodeTarget r)
     {
         var s = _state.Suggestions.Get(id);
         var v = s?.Versions.FirstOrDefault(x => x.Path == r.Path);
-        if (s?.SeriesId == null || v?.FileEpisode == null)
+        var episode = r.Episode is > 0 ? r.Episode : v?.FileEpisode;
+        if (s?.SeriesId == null || v == null || episode == null)
         {
-            return NotFound(new { success = false, message = "Soubor v návrhu není nebo nemá číslo dílu v názvu." });
+            return NotFound(new { success = false, message = "Soubor v návrhu není, nebo chybí číslo dílu — zadej ho ručně." });
         }
 
-        var season = v.FileSeason ?? s.Season ?? 1;
-        try
-        {
-            var dir = Advisor.SeasonDirFor(s.SeriesId, season) ?? Path.Combine(Path.GetDirectoryName(v.Path)!, $"Season {season:D2}");
-            var name = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{s.SeriesName} - S{season:D2}E{v.FileEpisode:D2}");
-            var moved = LibraryFiles.MoveVideo(v.Path, dir, name, Advisor.LibraryRoots());
-            _state.Suggestions.Update(id, x =>
+        var season = r.Season is >= 0 ? r.Season.Value : v.FileSeason ?? s.Season ?? 1;
+        var dir = Advisor.SeasonDirFor(s.SeriesId, season) ?? Path.Combine(LibraryAdvisor.SeriesRoot(v.Path), $"Season {season:D2}");
+        var name = EpName(s.SeriesName ?? s.Title, season, episode.Value);
+        var path = v.Path;
+        return RunFileOp(
+            new[] { "sug:" + id, "path:" + path },
+            $"⏳ Přesouvám jako „{name}“…",
+            () => LibraryFiles.MoveVideo(path, dir, name, Advisor.LibraryRoots()),
+            moved => _state.Suggestions.Update(id, x =>
             {
-                x.Versions = x.Versions.Where(y => y.Path != v.Path).ToList();
-                x.DeletePaths = x.DeletePaths.Where(p => p != v.Path).ToList();
-                x.Note = "Přesunuto jako " + Path.GetFileName(moved);
-                if (x.Versions.Count <= 1 && x.Versions.All(y => y.Suspect == null))
+                x.Versions = x.Versions.Where(y => y.Path != path).ToList();
+                x.DeletePaths = x.DeletePaths.Where(p => p != path).ToList();
+                x.Note = "Přesunuto jako " + Path.GetFileName(moved) + " — Jellyfin ho po skenu zařadí jako " + name[(name.LastIndexOf(" - ", StringComparison.Ordinal) + 3)..];
+                if (x.Versions.Count == 0 || (x.Versions.Count == 1 && x.Versions.All(y => y.Suspect == null)))
                 {
                     x.Status = "done";
+                    x.DecidedUtc = DateTime.UtcNow;
                 }
-            });
-            QueueScan();
-            return Ok(new { success = true, message = "Přesunuto do " + moved + " — Jellyfin ho zařadí jako S" + season.ToString("D2", System.Globalization.CultureInfo.InvariantCulture) + "E" + v.FileEpisode.Value.ToString("D2", System.Globalization.CultureInfo.InvariantCulture) });
-        }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+            }));
+    }
+
+    public sealed class OwnFolderRequest
+    {
+        public string Path { get; set; } = string.Empty;
+
+        public string Name { get; set; } = string.Empty;
+
+        public int? Year { get; set; }
+    }
+
+    /// <summary>
+    /// 🔧 Je to jiný film, ale Jellyfin ho má sloučený s jiným (stejná složka „star wars/", „Sloučit verze") →
+    /// přesunout do vlastní složky „Název (rok)/Název (rok).avi". Po skenu ho Jellyfin vezme jako samostatný
+    /// film a podle názvu složky identifikuje.
+    /// </summary>
+    [HttpPost("Suggestions/{id}/OwnFolder")]
+    public ActionResult OwnFolder([FromRoute] string id, [FromBody] OwnFolderRequest r)
+    {
+        var s = _state.Suggestions.Get(id);
+        var v = s?.Versions.FirstOrDefault(x => x.Path == r.Path);
+        var title = MediaOrganizer.Sanitize((r.Name ?? string.Empty).Trim());
+        if (s == null || v == null || string.IsNullOrWhiteSpace(title))
         {
-            return Ok(new { success = false, message = "Přesun selhal: " + ex.Message });
+            return NotFound(new { success = false, message = "Soubor v návrhu není, nebo chybí název filmu." });
         }
+
+        var roots = Advisor.LibraryRoots();
+        var root = roots.Where(x => LibraryFiles.IsInsideLibrary(v.Path, new[] { x }))
+            .OrderByDescending(x => x.Length).FirstOrDefault();
+        if (root == null)
+        {
+            return BadRequest(new { success = false, message = "Soubor není v žádné knihovně." });
+        }
+
+        var name = r.Year is >= 1900 and <= 2100
+            ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{title} ({r.Year})")
+            : title;
+        var dir = Path.Combine(root, name);
+        var path = v.Path;
+        return RunFileOp(
+            new[] { "sug:" + id, "path:" + path },
+            $"⏳ Přesouvám do vlastní složky {dir}…",
+            () => LibraryFiles.MoveVideo(path, dir, name, roots),
+            moved => _state.Suggestions.Update(id, x =>
+            {
+                x.Versions = x.Versions.Where(y => y.Path != path).ToList();
+                x.DeletePaths = x.DeletePaths.Where(p => p != path).ToList();
+                x.Note = "Odděleno do " + moved + " — po skenu knihovny bude samostatně";
+                if (x.Versions.Count <= 1)
+                {
+                    x.Status = "done";
+                    x.DecidedUtc = DateTime.UtcNow;
+                }
+            }));
     }
 
     /// <summary>Verze do návrhu nepatří (jiný film, opravený v Jellyfinu) → jen ji z návrhu vyřadit, nic nemazat.</summary>
@@ -899,35 +1019,50 @@ public class FsController : ControllerBase
         var roots = Advisor.LibraryRoots();
         var files = Advisor.SeriesFiles(r.From);
         var oldFolders = files.Select(f => LibraryAdvisor.SeriesRoot(f.Version.Path)).Distinct(StringComparer.Ordinal).ToList();
-        var moved = 0;
-        var failed = new List<string>();
         var dirs = new Dictionary<int, string?>();
-        foreach (var (ep, v) in files)
+        foreach (var season in files.Select(f => f.Ep.ParentIndexNumber ?? 1).Distinct())
         {
-            var season = ep.ParentIndexNumber ?? 1;
-            if (!dirs.TryGetValue(season, out var dir))
-            {
-                dir = Advisor.SeasonDirFor(r.To, season);
-                dirs[season] = dir;
-            }
-
-            if (dir == null)
-            {
-                failed.Add(Path.GetFileName(v.Path) + ": cílový seriál nemá složku");
-                continue;
-            }
-
-            try
-            {
-                LibraryFiles.MoveVideo(v.Path, dir, null, roots);
-                moved++;
-            }
-            catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
-            {
-                failed.Add(Path.GetFileName(v.Path) + ": " + ex.Message);
-            }
+            dirs[season] = Advisor.SeasonDirFor(r.To, season);
         }
 
+        var keys = new[] { "ser:" + r.From, "ser:" + r.To }.Concat(files.Select(f => "path:" + f.Version.Path));
+        return RunFileOp(keys, $"⏳ Přesouvám {files.Count} souborů…", () =>
+        {
+            var moved = 0;
+            var failed = new List<string>();
+            foreach (var (ep, v) in files)
+            {
+                var dir = dirs[ep.ParentIndexNumber ?? 1];
+                if (dir == null)
+                {
+                    failed.Add(Path.GetFileName(v.Path) + ": cílový seriál nemá složku");
+                    continue;
+                }
+
+                try
+                {
+                    LibraryFiles.MoveVideo(v.Path, dir, null, roots);
+                    moved++;
+                }
+                catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+                {
+                    failed.Add(Path.GetFileName(v.Path) + ": " + ex.Message);
+                }
+            }
+
+            RemoveEmptyFolders(oldFolders, roots);
+            _logger.LogInformation("Fastshare: sloučení seriálů — přesunuto {Moved}, chyby {Failed}", moved, failed.Count);
+            if (failed.Count > 0)
+            {
+                throw new IOException($"přesunuto {moved}, nepovedlo se: " + string.Join("; ", failed.Take(5)));
+            }
+
+            return string.Empty;
+        });
+    }
+
+    private static void RemoveEmptyFolders(List<string> oldFolders, IReadOnlyCollection<string> roots)
+    {
         // prázdné složky po přesunu (zbyly plakáty, nfo) pryč
         foreach (var dir in oldFolders.Where(Directory.Exists))
         {
@@ -943,9 +1078,6 @@ public class FsController : ControllerBase
                 }
             }
         }
-
-        QueueScan();
-        return Ok(new { success = failed.Count == 0, message = $"Přesunuto {moved} dílů." + (failed.Count > 0 ? " Nepovedlo se: " + string.Join("; ", failed.Take(5)) : string.Empty) });
     }
 
     public sealed class SeriesBulkRequest

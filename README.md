@@ -38,8 +38,13 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
     (když není, nejlepší nižší) a ukládají do složky řady,
   - u víc verzí se zaškrtne, které smazat (Harry Potter: smazat SD, nechat 4K i Full HD); délka u každé verze,
     jiná délka (prodloužená verze) se předem nezaškrtne,
-  - špatně zařazené soubory (Jellyfin dal „Titanic (1997)" k Thorovi, „05x01" jako S01E02) se označí ⚠️ a dají
-    se opravit: „Je to jiný film" (oddělit a najít v TMDb), „Zařadit jako S05E01" (přesun do správné řady),
+  - špatně zařazené soubory (Jellyfin dal „Titanic (1997)" k Thorovi, „05x01" jako S01E02, „Saw 3" jako Saw 3D,
+    různá čísla dílů série v jedné skupině, díl bez čísla „Černobyl E01") se označí ⚠️; „Zařadit jako S05E01"
+    přesune díl do správné řady,
+  - ruční oprava u každé verze, i když ji kontrola nepozná: ✏️ *Jiný film* (najít v TMDb, nebo oddělit do vlastní
+    složky „Název (rok)/", když ho Jellyfin sloučil s jinými) a ✏️ *Řada/díl* (přesun a přejmenování na „Seriál - SxxEyy"),
+  - přesuny běží na pozadí (mezi Filmy a Seriály se 4 GB kopírují minuty), kopie jde do skrytého souboru a každý
+    soubor se přesouvá jen jednou — opakované kliknutí nic nezdvojí,
   - 🚚 díly seriálů ve Filmech → přesun do složky řady seriálu; stejný seriál ve dvou složkách → sloučit;
     smazání celého seriálu,
   - řazení: nalezená lepší verze první, nejvíc ušetří místa, nejvíc kopií, od nejhorší / nejlepší kvality,

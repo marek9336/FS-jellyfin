@@ -26,9 +26,58 @@ public sealed class FsState : IDisposable
 
     private readonly SemaphoreSlim _watchWake = new(0, 1);
 
+    // Přesuny souborů na pozadí: klíč (návrh / soubor / seriál) → stav pro GUI. Klíč drží zámek,
+    // dokud přesun běží — druhé kliknutí nevyrobí další kopii.
+    private readonly ConcurrentDictionary<string, FileOp> _fileOps = new(StringComparer.Ordinal);
+
     private readonly object _outageLock = new();
     private DateTime _outageUntilUtc = DateTime.MinValue;
     private string? _outageReason;
+
+    public sealed record FileOp(bool Running, string Text, DateTime AtUtc);
+
+    /// <summary>Zabere klíče pro přesun. Když některý už běží, nezabere nic a vrátí false.</summary>
+    public bool TryStartFileOp(IReadOnlyList<string> keys, string text)
+    {
+        lock (_fileOps)
+        {
+            if (keys.Any(k => _fileOps.TryGetValue(k, out var op) && op.Running))
+            {
+                return false;
+            }
+
+            foreach (var k in keys)
+            {
+                _fileOps[k] = new FileOp(true, text, DateTime.UtcNow);
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>Přesun doběhl: chybu nechá viset pro GUI (u návrhu), úspěch smaže.</summary>
+    public void EndFileOp(IReadOnlyList<string> keys, string? error)
+    {
+        lock (_fileOps)
+        {
+            foreach (var k in keys)
+            {
+                if (error != null && (k.StartsWith("sug:", StringComparison.Ordinal) || k.StartsWith("ser:", StringComparison.Ordinal)))
+                {
+                    _fileOps[k] = new FileOp(false, error, DateTime.UtcNow);
+                }
+                else
+                {
+                    _fileOps.TryRemove(k, out _);
+                }
+            }
+        }
+    }
+
+    /// <summary>Stav přesunů po návrzích / seriálech (bez předpony „sug:" / „ser:").</summary>
+    public Dictionary<string, FileOp> FileOps(string prefix) =>
+        _fileOps.Where(kv => kv.Key.StartsWith(prefix, StringComparison.Ordinal))
+            .ToDictionary(kv => kv.Key[prefix.Length..], kv => kv.Value, StringComparer.Ordinal);
 
     public FsState(IApplicationPaths applicationPaths, IHttpClientFactory httpClientFactory, ILogger<FsState> logger)
     {

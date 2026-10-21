@@ -189,6 +189,90 @@ public sealed class LibraryTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => LibraryFiles.MoveVideo(moved, Path.Combine(_root, "jinde"), null, [movies, series]));
     }
 
+    // Skutečné případy z knihovny (22. 10. 2026): Jellyfin dal různé filmy série k jednomu TMDb
+    [Fact]
+    public void SequelNumbersInGroupDiffer()
+    {
+        var saw7 = new LibraryVersion { Path = "/Filmy/Saw/Saw 7; 3D (Horor; Krimi, Kanada; USA, 2010).avi" };
+        var saw3 = new LibraryVersion { Path = "/Filmy/Saw 3.avi" };
+        var group = new List<LibraryVersion> { saw7, saw3 };
+        foreach (var v in group) v.Suspect = LibraryFiles.MovieSuspect(v, "Saw 3D", "Saw 3D: The Final Chapter", 2010);
+        LibraryFiles.MarkSequelMismatch(group, "Saw 3D", "Saw 3D: The Final Chapter");
+        Assert.NotNull(saw3.Suspect);
+        Assert.Contains("3 × 7", saw3.Suspect + saw7.Suspect);
+        Assert.Empty(LibraryFiles.DefaultDelete(LibraryFiles.BestFirst(group)));
+
+        var sw4 = new LibraryVersion { Path = "/Filmy/star wars/Star Wars 04 Nová naděje.mkv" };
+        var solo = new LibraryVersion { Path = "/Filmy/star wars/Star wars SOLO .mkv" };
+        var solo2 = new LibraryVersion { Path = "/Filmy/Solo.A.Star.Wars.Story.2018.BRRip.XviD.AC3-EVO/Solo.A.Star.Wars.Story.2018.BRRip.XviD.AC3-EVO.avi" };
+        var sw = new List<LibraryVersion> { sw4, solo, solo2 };
+        foreach (var v in sw) v.Suspect = LibraryFiles.MovieSuspect(v, "Solo: Star Wars Story", "Solo: A Star Wars Story", 2018);
+        LibraryFiles.MarkSequelMismatch(sw, "Solo: Star Wars Story", "Solo: A Star Wars Story");
+        Assert.NotNull(sw4.Suspect);
+        Assert.Null(solo.Suspect);
+        Assert.Null(solo2.Suspect);
+
+        // stejné číslo ve všech verzích (Harry Potter 4 ve třech kvalitách) → nic podezřelého
+        var hp = new List<LibraryVersion>
+        {
+            new() { Path = "/Filmy/Harry Potter 4 2160p.mkv" }, new() { Path = "/Filmy/Harry Potter 4 1080p.mkv" }, new() { Path = "/Filmy/Harry Potter 4.avi" },
+        };
+        foreach (var v in hp) v.Suspect = LibraryFiles.MovieSuspect(v, "Harry Potter a Ohnivý pohár", "Harry Potter and the Goblet of Fire", 2005);
+        LibraryFiles.MarkSequelMismatch(hp, "Harry Potter a Ohnivý pohár", "Harry Potter and the Goblet of Fire");
+        Assert.All(hp, v => Assert.Null(v.Suspect));
+    }
+
+    [Theory]
+    [InlineData("Saw 3", new[] { 3 })]
+    [InlineData("Rocky IV", new[] { 4 })]
+    [InlineData("Star Wars 04 Nová naděje", new[] { 4 })]
+    [InlineData("Saw 3D", new int[0])]
+    [InlineData("Blade Runner 2049", new int[0])]
+    [InlineData("Vetřelec v Praze", new int[0])]
+    public void SequelNumbers(string title, int[] expected) =>
+        Assert.Equal(expected.ToHashSet(), LibraryFiles.SequelNumbers(title));
+
+    [Theory]
+    [InlineData("Černobyl E01 CZ dabing.avi", 1)]
+    [InlineData("Chernobyl.2019.E1.WEBRip.XViD.CZ.avi", 1)]
+    [InlineData("Černobyl 2. díl.avi", 2)]
+    [InlineData("Seriál - Epizoda 12.mkv", 12)]
+    [InlineData("Epizoda bez čísla.avi", null)]
+    [InlineData("Film 1080p x264 AC3.mkv", null)]
+    public void LoneEpisode(string name, int? expected) =>
+        Assert.Equal(expected, FileNameParser.LoneEpisode(name));
+
+    [Fact]
+    public void UnnumberedEpisodeIsSuspect()
+    {
+        var v = new LibraryVersion { Path = "/Serialy/Černobyl/Černobyl E02 CZ dabing.avi" };
+        var why = LibraryFiles.EpisodeSuspect(v, null, null);
+        Assert.Contains("S01E02", why);
+        Assert.Equal(2, v.FileEpisode);
+
+        var unknown = new LibraryVersion { Path = "/Serialy/Černobyl/Černobyl CZ dabing.avi" };
+        Assert.Contains("ručně", LibraryFiles.EpisodeSuspect(unknown, null, null));
+        Assert.Null(unknown.FileEpisode);
+    }
+
+    [Fact]
+    public void MoveLeavesNoTempFileAndTwoMovesDoNotCopy()
+    {
+        var movies = Path.Combine(_root, "Filmy");
+        var series = Path.Combine(_root, "Serialy");
+        Directory.CreateDirectory(movies);
+        var src = Path.Combine(movies, "Skrytá tvář sportu_S01E02_Přes trávu k vavřínům.mp4");
+        File.WriteAllText(src, "video");
+        var dest = Path.Combine(series, "Skrytá tvář sportu", "Season 01");
+        var moved = LibraryFiles.MoveVideo(src, dest, "Skrytá tvář sportu - S01E02", [movies, series]);
+        Assert.Equal(["Skrytá tvář sportu - S01E02.mp4"], Directory.GetFiles(dest).Select(Path.GetFileName));
+        Assert.Equal("video", File.ReadAllText(moved));
+
+        // druhé kliknutí na už přesunutý soubor nesmí vyrobit „(2)"
+        Assert.Throws<FileNotFoundException>(() => LibraryFiles.MoveVideo(src, dest, "Skrytá tvář sportu - S01E02", [movies, series]));
+        Assert.Single(Directory.GetFiles(dest));
+    }
+
     [Fact]
     public void MinQualityFiltersCandidates()
     {

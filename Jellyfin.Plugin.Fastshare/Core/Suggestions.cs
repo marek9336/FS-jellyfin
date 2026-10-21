@@ -8,6 +8,12 @@ public class LibraryVersion
     /// <summary>ID položky Jellyfinu, ke které soubor patří (u sloučených verzí každá svoje).</summary>
     public string ItemId { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Položka Jellyfinu, pod kterou soubor visí. Víc verzí se stejným vlastníkem = Jellyfin je sloučil do
+    /// jednoho filmu (stejná složka nebo „Sloučit verze"); oddělit je jde jen přesunem do vlastní složky.
+    /// </summary>
+    public string? OwnerId { get; set; }
+
     public string Path { get; set; } = string.Empty;
 
     public long SizeBytes { get; set; }

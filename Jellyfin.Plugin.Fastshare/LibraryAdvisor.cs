@@ -249,6 +249,8 @@ public sealed class LibraryAdvisor : BackgroundService
                 v.Suspect = LibraryFiles.MovieSuspect(v, g.Main.Name, g.Main.OriginalTitle, g.Main.ProductionYear);
             }
 
+            LibraryFiles.MarkSequelMismatch(best, g.Main.Name, g.Main.OriginalTitle);
+
             LibraryFiles.MarkLengths(best);
             Suggestion? dup = null;
             if (best.Count > 1)
@@ -436,6 +438,7 @@ public sealed class LibraryAdvisor : BackgroundService
             {
                 DurationSec = seconds > 0 ? (int)seconds : null,
                 ItemId = Guid.TryParse(src.Id, out var sid) ? sid.ToString("N") : item.Id.ToString("N"),
+                OwnerId = item.Id.ToString("N"),
                 Path = src.Path,
                 SizeBytes = size,
                 Width = w,

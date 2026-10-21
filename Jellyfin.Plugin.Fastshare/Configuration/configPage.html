@@ -321,6 +321,31 @@
 
         function epTag(s, e) { return 'S' + pad2(s) + 'E' + pad2(e); }
 
+        /// Díl bez čísla v Jellyfinu (S00E00 by mátlo) → „bez čísla dílu"
+        function epLabel(s, e) { return e == null ? '<span style="color:#ffb74d;">bez čísla dílu</span>' : epTag(s == null ? 1 : s, e); }
+
+        /// Stav přesunu na pozadí (návrh nebo seriál): { Running, Text }
+        function fileOp(kind, id) { var o = (sugData && sugData.fileOps && sugData.fileOps[kind]) || {}; return o[id] || null; }
+
+        /// Po spuštění přesunu na pozadí hlídat, až doběhne (seznam se mezitím nepřekresluje, ať nemizí formuláře)
+        var opWatch = null;
+        function watchOps(msg) {
+            if (opWatch) clearInterval(opWatch);
+            opWatch = setInterval(function () {
+                api('GET', 'Suggestions').then(function (d) {
+                    var all = Object.assign({}, (d.fileOps || {}).items || {}, (d.fileOps || {}).series || {});
+                    var running = Object.keys(all).some(function (k) { return all[k].Running; });
+                    if (!running) { clearInterval(opWatch); opWatch = null; sugData = d; renderSugStatus(); renderSugList(); }
+                });
+            }, 4000);
+        }
+
+        function startedOrDone(msg, r, reload) {
+            if (r && r.background) { msg.textContent = r.message; watchOps(msg); return; }
+            msg.textContent = (r && r.success === false ? '⚠️ ' : '✅ ') + ((r && r.message) || 'Hotovo');
+            if (reload !== false) setTimeout(function () { loadSuggest(false); }, 1500);
+        }
+
         function errMsg(xhr, def) {
             try { return JSON.parse(xhr.responseText).message || def; } catch (e) { return def; }
         }
@@ -864,19 +889,25 @@
                 ? '<label style="display:inline-flex; align-items:center; gap:.25em; margin-right:.4em;" title="Zaškrtnuté verze se smažou">'
                     + '<input type="checkbox" class="s-del" data-path="' + esc(v.Path) + '"' + ((x.DeletePaths || []).indexOf(v.Path) >= 0 ? ' checked' : '') + '> smazat</label>'
                 : '';
-            var fix = '';
+            var fix = '', p = esc(v.Path);
+            var isEp = x.Kind === 'episode';
+            var fixSeason = v.FileSeason != null ? v.FileSeason : (x.Season != null ? x.Season : 1);
+            // ruční oprava je u každé verze — i když ji kontrola za podezřelou nepovažuje (Saw 3 × Saw 3D)
+            var edit = x.Kind === 'misplaced' ? '' : (isEp
+                ? '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="editEpisode" data-path="' + p + '" title="Zadat řadu a díl ručně — soubor se přesune a přejmenuje">✏️ Řada/díl</button>'
+                : '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="otherMovie" data-path="' + p + '" title="Soubor je jiný film — najít ho v TMDb, nebo oddělit do vlastní složky">✏️ Jiný film</button>');
             if (v.Suspect) {
                 fix = '<div class="fs-sub" style="opacity:1; color:#ffb74d; margin-left:1.6em;">⚠️ ' + esc(v.Suspect) + ' '
-                    + (x.Kind === 'episode' && v.FileEpisode != null
-                        ? '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="fixEpisode" data-path="' + esc(v.Path) + '" title="Přesune soubor do správné řady jako „' + esc(x.SeriesName) + ' - S' + pad2(v.FileSeason || x.Season || 1) + 'E' + pad2(v.FileEpisode) + '“">🔧 Zařadit jako S' + pad2(v.FileSeason || x.Season || 1) + 'E' + pad2(v.FileEpisode) + '</button>'
-                        : (x.Kind !== 'episode' ? '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="otherMovie" data-path="' + esc(v.Path) + '" title="Oddělí soubor od filmu a najde ho v TMDb pod správným názvem">🔧 Je to jiný film</button>' : ''))
-                    + ' <button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="drop" data-path="' + esc(v.Path) + '" title="Jen vyřadit z návrhu (nic se nesmaže)">vyřadit z návrhu</button></div>'
-                    + '<div class="s-vfix" data-path="' + esc(v.Path) + '"></div>';
+                    + (isEp && v.FileEpisode != null
+                        ? '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="fixEpisode" data-path="' + p + '" title="Přesune soubor do správné řady jako „' + esc(x.SeriesName) + ' - ' + epTag(fixSeason, v.FileEpisode) + '“">🔧 Zařadit jako ' + epTag(fixSeason, v.FileEpisode) + '</button>'
+                        : '')
+                    + (x.Kind !== 'misplaced' ? ' <button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="drop" data-path="' + p + '" title="Jen vyřadit z návrhu (nic se nesmaže)">vyřadit z návrhu</button>' : '') + '</div>';
             }
+            if (edit) fix += '<div class="s-vfix" data-path="' + p + '"></div>';
             return '<div class="fs-sub">' + check + (i === 0 ? '⭐ ' : '') + '<span class="fs-badge fs-b-q">' + esc(v.Quality || '?') + '</span>'
                 + '<span class="fs-badge">' + res + '</span><span class="fs-badge">' + fmtBytes(v.SizeBytes) + '</span>'
                 + (v.DurationSec ? '<span class="fs-badge">⏱ ' + fmtDuration(v.DurationSec) + '</span>' : '')
-                + ' ' + esc(v.Path) + '</div>'
+                + ' ' + esc(v.Path) + (edit ? ' ' + edit : '') + '</div>'
                 + (v.LengthNote ? '<div class="fs-sub" style="opacity:1; color:#90caf9; margin-left:1.6em;">⏱ ' + esc(v.LengthNote) + ' — nezaškrtnuto</div>' : '')
                 + fix;
         }
@@ -931,16 +962,27 @@
         }
 
         function itemHtml(x) {
-            var head = '<div class="fs-name">' + (x.Kind === 'episode' ? esc(x.SeriesName || x.Title) + ' ' + epTag(x.Season || 0, x.Episode || 0) : esc(x.Title) + (x.Year ? ' (' + x.Year + ')' : ''))
+            var head = '<div class="fs-name">' + (x.Kind === 'episode' ? esc(x.SeriesName || x.Title) + ' ' + epLabel(x.Season, x.Episode) : esc(x.Title) + (x.Year ? ' (' + x.Year + ')' : ''))
                 + (x.OriginalTitle && x.OriginalTitle !== x.Title ? ' <span style="opacity:.6; font-weight:normal;">· ' + esc(x.OriginalTitle) + '</span>' : '')
                 + (x.Kind === 'episode' && x.TargetQuality ? ' <span style="opacity:.6; font-weight:normal;">· cíl ' + esc(x.TargetQuality) + '</span>' : '') + '</div>';
             var body = '', actions = '';
             var multi = x.Versions.length > 1;
+            var op = fileOp('items', x.Id);
+            var opHtml = op ? '<div class="fs-sub" style="opacity:1; color:' + (op.Running ? '#90caf9' : '#ffb74d') + ';">' + esc(op.Text) + '</div>' : '';
+            if (op && op.Running) {
+                // přesun běží na pozadí → žádná tlačítka (druhé kliknutí by nic nepřidalo)
+                head = x.Kind === 'misplaced' ? '<div class="fs-name">🚚 ' + esc(x.SeriesName || x.Title) + ' ' + epLabel(x.Season, x.Episode) + '</div>' : head;
+                return '<div class="fs-row" data-id="' + esc(x.Id) + '"><div class="fs-main">' + head
+                    + x.Versions.map(function (v, i) { return '<div class="fs-sub">' + esc(v.Path) + '</div>'; }).join('') + opHtml + '</div></div>';
+            }
             if (x.Kind === 'misplaced' && x.Status === 'new') {
-                head = '<div class="fs-name">🚚 ' + esc(x.SeriesName || x.Title) + ' ' + epTag(x.Season || 0, x.Episode || 0) + '</div>';
+                head = '<div class="fs-name">🚚 ' + esc(x.SeriesName || x.Title) + ' ' + epLabel(x.Season, x.Episode) + '</div>';
                 body = x.Versions.map(function (v, i) { return verRow(x, v, 1, false); }).join('')
                     + '<div class="fs-sub">díl seriálu ve Filmech · ' + esc(x.Note || '') + '</div>'
-                    + '<div class="fs-sub">➡️ přesune se do <strong>' + esc(x.TargetDir || '?') + '</strong> jako „' + esc((x.SeriesName || x.Title) + ' - ' + epTag(x.Season || 1, x.Episode || 1)) + '“</div>';
+                    + '<div class="fs-sub">➡️ přesune se do <strong>' + esc(x.TargetDir || '?') + '</strong> jako „' + esc(x.SeriesName || x.Title) + ' - '
+                    + 'S<input type="number" class="s-mseason" min="0" max="99" value="' + (x.Season != null ? x.Season : 1) + '" style="width:3.2em;" title="Řada">'
+                    + 'E<input type="number" class="s-mepisode" min="1" max="999" value="' + (x.Episode != null ? x.Episode : 1) + '" style="width:3.6em;" title="Díl">“'
+                    + ' <span style="opacity:.6;">(řadu a díl můžeš opravit)</span></div>' + opHtml;
                 actions = '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="move">🚚 Přesunout do Seriálů</button>'
                     + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="Nechat ve Filmech">✋ Nechat</button>'
                     + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Smazat soubor">🗑</button>';
@@ -948,7 +990,7 @@
                     + '<div style="display:flex; gap:.3em; flex-wrap:wrap; align-items:center;">' + actions + '</div></div>';
             }
             if (x.Kind === 'missing' && x.Status === 'new') {
-                head = '<div class="fs-name">❓ ' + esc(x.SeriesName || x.Title) + ' ' + epTag(x.Season || 0, x.Episode || 0)
+                head = '<div class="fs-name">❓ ' + esc(x.SeriesName || x.Title) + ' ' + epLabel(x.Season, x.Episode)
                     + (x.EpisodeName ? ' <span style="font-weight:normal;">— ' + esc(x.EpisodeName) + '</span>' : '')
                     + (x.PremiereDate ? ' <span style="opacity:.6; font-weight:normal;">· ' + new Date(x.PremiereDate).toLocaleDateString('cs-CZ') + '</span>' : '') + '</div>';
                 body = '<div class="fs-sub">chybí v knihovně' + (x.TargetDir ? ' · uloží se do ' + esc(x.TargetDir) : '') + '</div>'
@@ -983,7 +1025,7 @@
                 actions += '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="' + (multi ? 'Nechat všechny verze' : 'Kvalita mi stačí — nenavrhovat') + '">✋ ' + (multi ? 'Nechat' : 'Stačí') + '</button>';
                 if (x.Kind !== 'episode') actions += '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Film do knihovny nepatří — smazat">🗑 Smazat film</button>';
             }
-            return '<div class="fs-row" data-id="' + esc(x.Id) + '"><div class="fs-main">' + head + body + '<div class="s-msg fs-msg"></div></div>'
+            return '<div class="fs-row" data-id="' + esc(x.Id) + '"><div class="fs-main">' + head + body + opHtml + '<div class="s-msg fs-msg"></div></div>'
                 + '<div style="display:flex; gap:.3em; flex-wrap:wrap; align-items:center;">' + actions + '</div></div>';
         }
 
@@ -1044,7 +1086,7 @@
                         + g.map(function (to) {
                             var from = g.filter(function (s) { return s.SeriesId !== to.SeriesId; })[0];
                             return '<button is="emby-button" type="button" class="raised fs-btn s-merge" data-from="' + from.SeriesId + '" data-to="' + to.SeriesId + '">Sloučit do ' + esc((to.Folders || [to.Name])[0]) + '</button>';
-                        }).join('') + '</div><div class="fs-msg s-mmsg"></div></div>';
+                        }).join('') + '</div><div class="fs-msg s-mmsg">' + g.map(function (s) { var o = fileOp('series', s.SeriesId); return o ? esc(o.Text) : ''; }).filter(Boolean).slice(0, 1).join('') + '</div></div>';
                 });
                 if ((sugData.series || []).some(function (s) { return s.Missing == null; })) {
                     html += '<div class="fs-card" id="fsMissSetup">❓ <strong>Chybějící díly</strong> eviduje TMDb plugin Jellyfinu („Importovat chybějící epizody“), teď je vypnutý. '
@@ -1082,8 +1124,10 @@
                     if (!confirm('Přesunout všechny díly do „' + b.textContent.replace('Sloučit do ', '') + '“? Soubory se přesunou do složek řad, nic se nemaže.')) return;
                     var msg = b.closest('.fs-sdup').querySelector('.s-mmsg');
                     msg.textContent = 'Přesouvám…';
+                    b.closest('.fs-sdup').querySelectorAll('button').forEach(function (x) { x.disabled = true; });
                     api('POST', 'Suggestions/Series/Merge', { From: b.getAttribute('data-from'), To: b.getAttribute('data-to') }).then(function (r) {
-                        msg.textContent = (r.success ? '✅ ' : '⚠️ ') + r.message + ' Po skenu knihovny klikni na „Projít knihovnu“.';
+                        if (r.background) { msg.textContent = r.message + ' Po dokončení klikni na „Projít knihovnu“.'; watchOps(msg); return; }
+                        msg.textContent = (r.success ? '✅ ' : '⚠️ ') + r.message;
                     }, function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Sloučení selhalo.'); });
                 });
             });
@@ -1162,15 +1206,19 @@
             var x = sugData.items.filter(function (i) { return i.Id === id; })[0];
             var msg = row.querySelector('.s-msg');
             var enc = encodeURIComponent(id);
-            function done(r) { msg.textContent = (r && r.success === false ? '⚠️ ' : '✅ ') + ((r && r.message) || 'Hotovo'); setTimeout(function () { loadSuggest(false); }, 1200); }
-            function fail(xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); }
+            function done(r) { startedOrDone(msg, r); }
+            function fail(xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); row.querySelectorAll('button').forEach(function (b) { b.disabled = false; }); }
             var repl = row.querySelector('.s-replace');
             if (act === 'download') {
                 api('POST', 'Suggestions/' + enc + '/Download', { Replace: !!(repl && repl.checked) }).then(done, fail);
             } else if (act === 'reject') {
                 api('POST', 'Suggestions/' + enc + '/Reject', {}).then(done, fail);
             } else if (act === 'move') {
-                api('POST', 'Suggestions/' + enc + '/Move').then(done, fail);
+                row.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+                msg.textContent = '⏳ Spouštím přesun…';
+                api('POST', 'Suggestions/' + enc + '/Move', {
+                    Season: parseInt(row.querySelector('.s-mseason').value, 10), Episode: parseInt(row.querySelector('.s-mepisode').value, 10)
+                }).then(done, fail);
             } else if (act === 'reopen') {
                 api('POST', 'Suggestions/' + enc + '/Reopen').then(done, fail);
             } else if (act === 'deleteVersions') {
@@ -1196,28 +1244,55 @@
             if (act === 'drop') {
                 api('POST', 'Suggestions/' + enc + '/DropVersion', { Path: path }).then(function () { loadSuggest(false); });
             } else if (act === 'fixEpisode') {
-                api('POST', 'Suggestions/' + enc + '/FixEpisode', { Path: path }).then(function (r) {
-                    msg.textContent = (r.success ? '✅ ' : '⚠️ ') + r.message; setTimeout(function () { loadSuggest(false); }, 2500);
-                }, function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); });
+                row.querySelectorAll('.s-vact').forEach(function (b) { b.disabled = true; });
+                api('POST', 'Suggestions/' + enc + '/FixEpisode', { Path: path }).then(function (r) { startedOrDone(msg, r); },
+                    function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); });
+            } else if (act === 'editEpisode') {
+                var ebox = row.querySelector('.s-vfix[data-path="' + CSS.escape(path) + '"]');
+                var es = v.FileSeason != null ? v.FileSeason : (x.Season != null ? x.Season : 1);
+                var ee = v.FileEpisode != null ? v.FileEpisode : (x.Episode != null ? x.Episode : '');
+                ebox.innerHTML = '<div class="fs-form" style="background:#151515; align-items:center;">Zařadit jako '
+                    + '<div class="inputContainer" style="width:80px;"><input is="emby-input" type="number" class="s-es" min="0" label="Řada" value="' + es + '"></div>'
+                    + '<div class="inputContainer" style="width:80px;"><input is="emby-input" type="number" class="s-ee" min="1" label="Díl" value="' + ee + '"></div>'
+                    + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-ego">🔧 Přesunout a přejmenovat</button></div>'
+                    + '<div class="fs-sub">Soubor dostane název „' + esc(x.SeriesName || x.Title) + ' - SxxEyy“ ve složce řady — Jellyfin ho pak zařadí správně.</div>';
+                ebox.querySelector('.s-ego').addEventListener('click', function () {
+                    var se = parseInt(ebox.querySelector('.s-es').value, 10), ep = parseInt(ebox.querySelector('.s-ee').value, 10);
+                    if (!(se >= 0) || !(ep >= 1)) { msg.textContent = 'Zadej řadu (0 = speciály) a díl.'; return; }
+                    ebox.querySelector('.s-ego').disabled = true;
+                    api('POST', 'Suggestions/' + enc + '/FixEpisode', { Path: path, Season: se, Episode: ep }).then(function (r) { startedOrDone(msg, r); },
+                        function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); ebox.querySelector('.s-ego').disabled = false; });
+                });
             } else if (act === 'otherMovie') {
-                // 1) oddělit sloučené verze (Jellyfin „Rozdělit verze"), 2) najít soubor v TMDb pod jeho názvem
+                // Sloučené do jedné položky (stejná složka / „Sloučit verze") jde oddělit jen přesunem do vlastní složky.
+                // Samostatná položka, jen špatně identifikovaná (Saw 3 jako Saw 3D) → najít v TMDb.
+                var shared = !!v.OwnerId && x.Versions.filter(function (y) { return y.OwnerId === v.OwnerId; }).length > 1;
                 var box = row.querySelector('.s-vfix[data-path="' + CSS.escape(path) + '"]');
-                box.innerHTML = '<div class="fs-msg">Odděluji soubor od filmu…</div>';
-                ApiClient.ajax({ type: 'DELETE', url: ApiClient.getUrl('Videos/' + x.ItemId + '/AlternateSources') }).then(next, next);
-                function next() {
-                    box.innerHTML = '<div class="fs-form" style="background:#151515;">'
-                        + '<div class="inputContainer" style="flex:1; min-width:200px;"><input is="emby-input" type="text" class="s-name" label="Co je to za film" value="' + esc(v.FileTitle || '') + '"></div>'
-                        + '<div class="inputContainer" style="width:90px;"><input is="emby-input" type="number" class="s-year" label="Rok" value="' + (v.FileYear || '') + '"></div>'
-                        + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-vfind">🔎 Najít</button></div><div class="s-results"></div>';
-                    box.querySelector('.s-vfind').addEventListener('click', function () {
-                        findMetaFor(box, v.ItemId, function (m) {
-                            api('POST', 'Suggestions/' + enc + '/DropVersion', { Path: path }).then(function () {
-                                box.innerHTML = '<div class="fs-msg">✅ Soubor je teď samostatně jako ' + esc(m.Name) + ' — vyřazen z návrhu.</div>';
-                                setTimeout(function () { loadSuggest(false); }, 2000);
-                            });
+                box.innerHTML = '<div class="fs-form" style="background:#151515;">'
+                    + '<div class="inputContainer" style="flex:1; min-width:200px;"><input is="emby-input" type="text" class="s-name" label="Co je to za film" value="' + esc(v.FileTitle || '') + '"></div>'
+                    + '<div class="inputContainer" style="width:90px;"><input is="emby-input" type="number" class="s-year" label="Rok" value="' + (v.FileYear || '') + '"></div>'
+                    + (shared ? '' : '<button is="emby-button" type="button" class="raised button-submit fs-btn s-vfind">🔎 Najít v TMDb</button>')
+                    + '<button is="emby-button" type="button" class="raised' + (shared ? ' button-submit' : '') + ' fs-btn s-vown" title="Přesune soubor do složky „Název (rok)“ — Jellyfin ho pak vezme jako samostatný film">📁 Do vlastní složky</button></div>'
+                    + '<div class="fs-sub">' + (shared
+                        ? 'Jellyfin má tenhle soubor sloučený s ostatními verzemi do jednoho filmu — oddělit ho jde přesunem do vlastní složky, pak ho identifikuje podle názvu.'
+                        : '„Najít v TMDb“ přepíše, za jaký film ho Jellyfin má (plakát, herci). „Do vlastní složky“ ho navíc přesune do „Název (rok)/“.') + '</div>'
+                    + '<div class="s-results"></div>';
+                var find = box.querySelector('.s-vfind');
+                if (find) find.addEventListener('click', function () {
+                    findMetaFor(box, v.ItemId, function (m) {
+                        api('POST', 'Suggestions/' + enc + '/DropVersion', { Path: path }).then(function () {
+                            box.innerHTML = '<div class="fs-msg">✅ Soubor je teď ' + esc(m.Name) + (m.ProductionYear ? ' (' + m.ProductionYear + ')' : '') + ' — vyřazen z návrhu.</div>';
+                            setTimeout(function () { loadSuggest(false); }, 2000);
                         });
                     });
-                }
+                });
+                box.querySelector('.s-vown').addEventListener('click', function () {
+                    var name = box.querySelector('.s-name').value.trim(), year = parseInt(box.querySelector('.s-year').value, 10) || null;
+                    if (!name) { msg.textContent = 'Napiš, co je to za film.'; return; }
+                    box.querySelector('.s-vown').disabled = true;
+                    api('POST', 'Suggestions/' + enc + '/OwnFolder', { Path: path, Name: name, Year: year }).then(function (r) { startedOrDone(msg, r); },
+                        function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); box.querySelector('.s-vown').disabled = false; });
+                });
             }
         }
 

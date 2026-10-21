@@ -68,6 +68,60 @@ public static class LibraryFiles
         return wa.Count > 0 && wb.Count > 0 && wa.Overlaps(wb);
     }
 
+    private static readonly Dictionary<string, int> Roman = new(StringComparer.Ordinal)
+    {
+        ["ii"] = 2, ["iii"] = 3, ["iv"] = 4, ["vi"] = 6, ["vii"] = 7, ["viii"] = 8, ["ix"] = 9, ["xi"] = 11, ["xii"] = 12,
+    };
+
+    /// <summary>
+    /// Čísla dílů filmové série v názvu („Saw 3" → 3, „Star Wars 04" → 4, „Rocky IV" → 4). Roky,
+    /// „3D" ani jednopísmenné římské (i, v, x jsou i česká slova) se nepočítají.
+    /// </summary>
+    public static HashSet<int> SequelNumbers(string? title)
+    {
+        var set = new HashSet<int>();
+        foreach (var w in FileNameParser.Normalize(title).Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (w.Length <= 2 && w.All(char.IsDigit) && int.TryParse(w, out var n) && n is > 0 and <= 30)
+            {
+                set.Add(n);
+            }
+            else if (Roman.TryGetValue(w, out var r))
+            {
+                set.Add(r);
+            }
+        }
+
+        return set;
+    }
+
+    private static string Nums(IEnumerable<int> n) => string.Join(", ", n.OrderBy(x => x));
+
+    /// <summary>
+    /// Verze jednoho filmu mají v názvech různá čísla dílů („Saw 3" × „Saw 7", „Star Wars 04" × „Solo")
+    /// → nejspíš různé filmy série, které Jellyfin identifikoval jako jeden. Označí verze, jejichž číslo
+    /// není v názvu filmu.
+    /// </summary>
+    public static void MarkSequelMismatch(List<LibraryVersion> versions, string? name, string? originalTitle)
+    {
+        var sets = versions.Select(v => SequelNumbers(v.FileTitle ?? Path.GetFileNameWithoutExtension(v.Path))).ToList();
+        if (sets.Select(Nums).Distinct(StringComparer.Ordinal).Count() < 2)
+        {
+            return;
+        }
+
+        var movie = SequelNumbers(name);
+        movie.UnionWith(SequelNumbers(originalTitle));
+        var label = string.Join(" × ", sets.Select(x => x.Count > 0 ? Nums(x) : "bez čísla").Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
+        for (var i = 0; i < versions.Count; i++)
+        {
+            if (versions[i].Suspect == null && sets[i].Count > 0 && !sets[i].Overlaps(movie))
+            {
+                versions[i].Suspect = $"verze mají v názvu různá čísla dílů ({label}) — nejspíš jiný film série";
+            }
+        }
+    }
+
     /// <summary>Doplní k verzi, co o sobě říká název souboru.</summary>
     public static FsFile Describe(LibraryVersion v)
     {
@@ -97,6 +151,14 @@ public static class LibraryFiles
             return $"podle názvu souboru je to {f.Title} ({f.Year}), ne film z roku {year}";
         }
 
+        var fileNums = SequelNumbers(f.Title);
+        var movieNums = SequelNumbers(name);
+        movieNums.UnionWith(SequelNumbers(originalTitle));
+        if (fileNums.Count > 0 && movieNums.Count > 0 && !fileNums.Overlaps(movieNums))
+        {
+            return $"podle názvu souboru je to díl {Nums(fileNums)}, film „{name}“ má {Nums(movieNums)}";
+        }
+
         var folder = Path.GetFileName(Path.GetDirectoryName(v.Path) ?? string.Empty);
         if (!TitlesOverlap(f.Title, name) && !TitlesOverlap(f.Title, originalTitle)
             && !TitlesOverlap(folder, name) && !TitlesOverlap(folder, originalTitle))
@@ -111,6 +173,21 @@ public static class LibraryFiles
     public static string? EpisodeSuspect(LibraryVersion v, int? season, int? episode)
     {
         var f = Describe(v);
+        if (f.Episode == null && FileNameParser.LoneEpisode(Path.GetFileName(v.Path)) is { } lone)
+        {
+            // „Černobyl E01 CZ dabing" — díl bez řady; řadu vezme z Jellyfinu, jinak 1
+            v.FileEpisode = lone;
+            v.FileSeason = null;
+            f.Episode = lone;
+        }
+
+        if (episode == null)
+        {
+            return f.Episode != null
+                ? $"Jellyfin díl neočísloval — podle názvu souboru je to S{f.Season ?? season ?? 1:D2}E{f.Episode:D2}"
+                : "Jellyfin díl neočísloval a z názvu souboru číslo nejde vyčíst — zařaď ho ručně";
+        }
+
         if (f.Episode != null && (f.Episode != episode || (f.Season != null && f.Season != season)))
         {
             return $"podle názvu souboru je to S{f.Season ?? season:D2}E{f.Episode:D2}, Jellyfin ho má jako S{season:D2}E{episode:D2}";
@@ -162,18 +239,44 @@ public static class LibraryFiles
         var target = MediaOrganizer.EnsureUniquePath(Path.Combine(destDir, newBase + Path.GetExtension(path)));
         var finalBase = Path.GetFileNameWithoutExtension(target);
 
-        // doprovodné soubory (titulky „Film.cs.srt", „Film.nfo") nejdřív, ať se nepřejmenují pod video
+        // Mezi Filmy a Seriály (jiné připojení) se soubor kopíruje, u 4 GB i minuty. Kopie jde do skrytého
+        // souboru (Jellyfin tečkové soubory ignoruje) a pod pravé jméno se přejmenuje až celá — jinak by
+        // sken knihovny zařadil polovičatý soubor a další pokus by vyrobil „(2)".
+        var temp = Path.Combine(destDir, "." + finalBase + Path.GetExtension(path) + ".fsmove");
+        try
+        {
+            File.Move(path, temp, true);
+        }
+        catch
+        {
+            if (File.Exists(path) && File.Exists(temp))
+            {
+                File.Delete(temp);
+            }
+
+            throw;
+        }
+
+        File.Move(temp, target);
+
+        // doprovodné soubory (titulky „Film.cs.srt", „Film.nfo") se stejným základem názvu
         foreach (var f in Directory.EnumerateFiles(dir).ToList())
         {
             var name = Path.GetFileName(f);
-            if (f != path && name.StartsWith(oldBase + ".", StringComparison.Ordinal) && SidecarExtensions.Contains(Path.GetExtension(f)))
+            if (name.StartsWith(oldBase + ".", StringComparison.Ordinal) && SidecarExtensions.Contains(Path.GetExtension(f)))
             {
                 var suffix = name[oldBase.Length..];
-                File.Move(f, MediaOrganizer.EnsureUniquePath(Path.Combine(destDir, finalBase + suffix)));
+                try
+                {
+                    File.Move(f, MediaOrganizer.EnsureUniquePath(Path.Combine(destDir, finalBase + suffix)));
+                }
+                catch (IOException)
+                {
+                    // titulky navíc nesmí shodit přesun videa
+                }
             }
         }
 
-        File.Move(path, target);
         return target;
     }
 

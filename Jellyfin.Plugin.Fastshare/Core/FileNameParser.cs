@@ -568,6 +568,21 @@ public static class FileNameParser
         return false;
     }
 
+    private static readonly Regex LoneEpisodeRe = new(
+        @"(?<![a-z0-9])(?:e|ep|epizoda|episode|dil)[ ._-]?(?<e>\d{1,3})(?![0-9])|(?<![a-z0-9.])(?<e>\d{1,3})\s*\.?\s*(?:dil|epizoda)(?![a-z])",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Číslo dílu bez řady („Černobyl E01 CZ dabing", „Chernobyl.2019.E1", „2. díl"). Jen pro soubory,
+    /// o kterých už víme, že jsou díl seriálu (v hledání by „E1" v názvu filmu dělalo nepořádek).
+    /// </summary>
+    public static int? LoneEpisode(string fileName)
+    {
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+        var m = LoneEpisodeRe.Match(RemoveDiacritics(stem).ToLowerInvariant());
+        return m.Success && int.TryParse(m.Groups["e"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var e) && e > 0 ? e : null;
+    }
+
     private static List<string> Tokens(string plain) =>
         Regex.Matches(plain, @"[a-z0-9]+").Select(x => x.Value).ToList();
 
