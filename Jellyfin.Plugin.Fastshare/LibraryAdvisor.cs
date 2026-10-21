@@ -65,6 +65,24 @@ public sealed class LibraryAdvisor : BackgroundService
 
     public void Stop() => _runCts?.Cancel();
 
+    private volatile bool _restartRequested;
+
+    /// <summary>
+    /// Spustit kontrolu znovu hned (změna nastavení seriálu). Běžící se zastaví — nic se neztratí:
+    /// návrhy se ukládají průběžně a prohledané položky se přeskočí.
+    /// </summary>
+    public void Restart()
+    {
+        if (!Status.Running)
+        {
+            Start(false);
+            return;
+        }
+
+        _restartRequested = true;
+        Stop();
+    }
+
     private volatile bool _forceNext;
 
     /// <summary>Kořeny knihoven Jellyfinu — mimo ně se nikdy nic nemaže.</summary>
@@ -117,6 +135,13 @@ public sealed class LibraryAdvisor : BackgroundService
                     _runCts.Dispose();
                     _runCts = null;
                 }
+            }
+
+            if (_restartRequested)
+            {
+                _restartRequested = false;
+                manual = true;
+                continue;
             }
 
             try
@@ -275,7 +300,7 @@ public sealed class LibraryAdvisor : BackgroundService
 
         // Duplicity, filmy bez metadat a díly jsou hotové hned — uložit, ať jsou v GUI, i když
         // hledání lepších verzí poběží ještě dny
-        _state.Suggestions.Merge(found, new[] { "identify", "duplicate", "episode" });
+        _state.Suggestions.Merge(found, new[] { "identify", "duplicate", "episode", "missing" });
 
         // Pořadí: duplicity filmů → díly seriálů → lepší verze filmů; v rámci skupiny nejdéle nehledané
         var recheck = TimeSpan.FromDays(Math.Max(1, cfg.SuggestRecheckDays));
@@ -327,7 +352,7 @@ public sealed class LibraryAdvisor : BackgroundService
         }
 
         // Neúplné hledání (výpadek) nesmí smazat dřívější návrhy lepších verzí, na které se nedostalo
-        _state.Suggestions.Merge(found, complete ? new[] { "identify", "duplicate", "episode", "upgrade" } : new[] { "identify", "duplicate", "episode" });
+        _state.Suggestions.Merge(found, complete ? new[] { "identify", "duplicate", "episode", "missing", "upgrade" } : new[] { "identify", "duplicate", "episode", "missing" });
         Status.Phase = null;
         var summary = string.Create(
             CultureInfo.InvariantCulture,
@@ -405,6 +430,16 @@ public sealed class LibraryAdvisor : BackgroundService
             IsVirtualItem = false,
         }).OfType<Episode>().ToList();
 
+        // Chybějící díly: virtuální položky, které vytváří TMDb plugin Jellyfinu („Importovat chybějící
+        // epizody" pro knihovnu). Bez něj žádné nejsou → počet chybějících neznámý (null).
+        var virtualBySeries = _library.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = [BaseItemKind.Episode],
+            Recursive = true,
+            IsVirtualItem = true,
+        }).OfType<Episode>().GroupBy(e => e.SeriesId).ToDictionary(g => g.Key, g => g.ToList());
+        var missingKnown = virtualBySeries.Count > 0;
+
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var summaries = new List<SeriesSummary>();
         foreach (var series in episodes.Where(e => e.SeriesId != Guid.Empty).GroupBy(e => e.SeriesId))
@@ -428,7 +463,7 @@ public sealed class LibraryAdvisor : BackgroundService
             var target = manual ?? (LibraryFiles.Level(mode) > LibraryFiles.Level(maxTarget) ? maxTarget : mode);
             var targetLevel = LibraryFiles.Level(target);
             var name = series.First().SeriesName ?? "?";
-            summaries.Add(new SeriesSummary
+            var summary = new SeriesSummary
             {
                 SeriesId = seriesId,
                 Name = name,
@@ -437,9 +472,15 @@ public sealed class LibraryAdvisor : BackgroundService
                 Target = target,
                 TargetIsManual = manual != null,
                 MultiVersion = eps.Count(x => x.Versions.Count > 1),
-            });
+                SavingsBytes = eps.Sum(x => x.Versions.Skip(1).Sum(v => v.SizeBytes)),
+                FindMissing = _state.Suggestions.FindMissing(seriesId),
+            };
+            summaries.Add(summary);
 
-            BaseItem? seriesItem = null;
+            BaseItem? seriesItem = _library.GetItemById(series.Key);
+            var titles = new[] { name, seriesItem?.OriginalTitle }.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            jobs.AddRange(CollectMissing(series.Key, seriesId, name, titles!, seriesItem, eps.Select(x => (x.Ep, x.Versions)).ToList(),
+                virtualBySeries, missingKnown, target, summary, found, rejected, cfg));
             foreach (var (ep, versions) in eps)
             {
                 var below = versions[0].Quality != null && LibraryFiles.Level(versions[0].Quality) < targetLevel;
@@ -470,8 +511,6 @@ public sealed class LibraryAdvisor : BackgroundService
                     continue;
                 }
 
-                seriesItem ??= _library.GetItemById(series.Key);
-                var titles = new[] { name, seriesItem?.OriginalTitle }.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 var s = sug;
                 jobs.Add(new SearchJob
                 {
@@ -492,15 +531,124 @@ public sealed class LibraryAdvisor : BackgroundService
         return jobs;
     }
 
+    /// <summary>
+    /// Chybějící odvysílané díly seriálu (podle virtuálních položek z TMDb). Návrhy a hledání jen
+    /// u seriálů, kde to uživatel zapnul — Simpsonovi by jinak znamenali stovky dotazů.
+    /// </summary>
+    private List<SearchJob> CollectMissing(
+        Guid seriesGuid, string seriesId, string name, IReadOnlyList<string> titles, BaseItem? seriesItem,
+        List<(Episode Ep, List<LibraryVersion> Versions)> eps, Dictionary<Guid, List<Episode>> virtualBySeries, bool missingKnown,
+        string target, SeriesSummary summary, List<Suggestion> found, HashSet<string> rejected, PluginConfiguration cfg)
+    {
+        var jobs = new List<SearchJob>();
+        var have = new HashSet<(int, int)>();
+        foreach (var (ep, _) in eps)
+        {
+            if (ep.ParentIndexNumber is int sn && ep.IndexNumber is int en)
+            {
+                for (var k = en; k <= (ep.IndexNumberEnd ?? en); k++)
+                {
+                    have.Add((sn, k)); // dvojdíl „S01E01-E02" pokrývá oba
+                }
+            }
+        }
+
+        var now = DateTime.UtcNow;
+        var missing = (virtualBySeries.TryGetValue(seriesGuid, out var v) ? v : new List<Episode>())
+            .Where(e => e.ParentIndexNumber is > 0 && e.IndexNumber != null && e.PremiereDate != null && e.PremiereDate <= now)
+            .Where(e => !have.Contains((e.ParentIndexNumber!.Value, e.IndexNumber!.Value)))
+            .GroupBy(e => (e.ParentIndexNumber!.Value, e.IndexNumber!.Value))
+            .Select(g => g.First())
+            .OrderBy(e => e.ParentIndexNumber)
+            .ThenBy(e => e.IndexNumber)
+            .ToList();
+        summary.Missing = missingKnown ? missing.Count : null;
+        if (!summary.FindMissing)
+        {
+            return jobs;
+        }
+
+        foreach (var m in missing)
+        {
+            var season = m.ParentIndexNumber!.Value;
+            var episode = m.IndexNumber!.Value;
+            var id = string.Create(CultureInfo.InvariantCulture, $"miss:{seriesId}:S{season:D2}E{episode:D2}");
+            var sug = new Suggestion
+            {
+                Id = id,
+                Kind = "missing",
+                ItemId = m.Id.ToString("N"),
+                Title = name,
+                SeriesId = seriesId,
+                SeriesName = name,
+                Season = season,
+                Episode = episode,
+                EpisodeName = m.Name,
+                PremiereDate = m.PremiereDate,
+                TargetQuality = target,
+                TargetDir = SeasonDir(eps, season, seriesItem),
+            };
+            found.Add(sug);
+            var s = sug;
+            jobs.Add(new SearchJob
+            {
+                Key = id,
+                Priority = 1,
+                Skip = rejected.Contains(id),
+                Find = c => FindEpisodeAsync(titles, season, episode, target, cfg, c, allowLower: true),
+                Apply = cand =>
+                {
+                    s.Candidate = cand;
+                    _state.Suggestions.Upsert(s);
+                },
+                KeepOld = () =>
+                {
+                    if (_state.Suggestions.Get(id) is { Status: "new", Candidate: not null } old)
+                    {
+                        s.Candidate = old.Candidate;
+                    }
+                },
+            });
+        }
+
+        return jobs;
+    }
+
+    /// <summary>Složka řady v knihovně: kde leží jiné díly téže řady, jinak vedle ostatních řad, jinak složka seriálu.</summary>
+    private static string? SeasonDir(List<(Episode Ep, List<LibraryVersion> Versions)> eps, int season, BaseItem? seriesItem)
+    {
+        var same = eps.FirstOrDefault(x => x.Ep.ParentIndexNumber == season && x.Versions.Count > 0);
+        if (same.Ep != null)
+        {
+            return Path.GetDirectoryName(same.Versions[0].Path);
+        }
+
+        var seasonName = string.Create(CultureInfo.InvariantCulture, $"Season {season:D2}");
+        var any = eps.FirstOrDefault(x => x.Versions.Count > 0);
+        if (any.Ep != null)
+        {
+            var dir = Path.GetDirectoryName(any.Versions[0].Path)!;
+            var parent = Path.GetFileName(dir).StartsWith("Season", StringComparison.OrdinalIgnoreCase) || Path.GetFileName(dir).StartsWith("Série", StringComparison.OrdinalIgnoreCase)
+                ? Path.GetDirectoryName(dir)!
+                : dir;
+            return Path.Combine(parent, seasonName);
+        }
+
+        return string.IsNullOrEmpty(seriesItem?.Path) ? null : Path.Combine(seriesItem.Path, seasonName);
+    }
+
     /// <summary>Díl v cílové kvalitě: „Název S01E02" (český, pak původní název seriálu).</summary>
-    private async Task<SuggestedFile?> FindEpisodeAsync(IReadOnlyList<string> titles, int season, int episode, string target, PluginConfiguration cfg, CancellationToken ct)
+    private async Task<SuggestedFile?> FindEpisodeAsync(IReadOnlyList<string> titles, int season, int episode, string target, PluginConfiguration cfg, CancellationToken ct, bool allowLower = false)
     {
         var opts = FsState.SelectorOptions(target);
         opts.MinQuality = target;
+
+        // Chybějící díl: když není v cílové kvalitě, lepší nižší než žádný (bez dalšího dotazu)
+        var fallback = allowLower ? FsState.SelectorOptions(target) : null;
         foreach (var title in titles)
         {
             var t = new SelectTarget { Kind = MediaKind.Episode, Title = title, Season = season, Episode = episode };
-            var c = await SearchBestAsync(t, opts, cfg, ct).ConfigureAwait(false);
+            var c = await SearchBestAsync(t, opts, cfg, ct, fallback).ConfigureAwait(false);
             if (c != null)
             {
                 return c;
@@ -549,7 +697,7 @@ public sealed class LibraryAdvisor : BackgroundService
     /// hodinová pauza a <see cref="FastshareException"/> (smyčka kontroly skončí, položka se
     /// neoznačí jako prohledaná). Jiná chyba = nic nenalezeno.
     /// </summary>
-    private async Task<SuggestedFile?> SearchBestAsync(SelectTarget t, FileSelectorOptions opts, PluginConfiguration cfg, CancellationToken ct)
+    private async Task<SuggestedFile?> SearchBestAsync(SelectTarget t, FileSelectorOptions opts, PluginConfiguration cfg, CancellationToken ct, FileSelectorOptions? fallback = null)
     {
         List<FsFile> files;
         try
@@ -572,6 +720,11 @@ public sealed class LibraryAdvisor : BackgroundService
         }
 
         var ranked = FileSelector.Rank(files, t, opts);
+        if (ranked.Count == 0 && fallback != null)
+        {
+            ranked = FileSelector.Rank(files, t, fallback);
+        }
+
         if (ranked.Count == 0)
         {
             return null;

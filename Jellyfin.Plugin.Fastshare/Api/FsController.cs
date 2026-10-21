@@ -633,7 +633,7 @@ public class FsController : ControllerBase
         }
 
         var c = s.Candidate;
-        var episode = s.Kind == "episode";
+        var episode = s.Kind is "episode" or "missing";
         var item = new QueueItem
         {
             Title = s.Title,
@@ -642,7 +642,7 @@ public class FsController : ControllerBase
             SeriesTitle = episode ? s.SeriesName : null,
             Season = episode ? s.Season : null,
             Episode = episode ? s.Episode : null,
-            TargetDir = episode && s.Versions.Count > 0 ? Path.GetDirectoryName(s.Versions[0].Path) : null,
+            TargetDir = !episode ? null : s.TargetDir ?? (s.Versions.Count > 0 ? Path.GetDirectoryName(s.Versions[0].Path) : null),
             FileId = c.FileId,
             FileName = c.FileName,
             DownloadUrl = c.DownloadUrl,
@@ -747,13 +747,17 @@ public class FsController : ControllerBase
     public sealed class SeriesBulkRequest
     {
         public bool Replace { get; set; } = true;
+
+        /// <summary>"episode" (lepší verze dílů) nebo "missing" (chybějící díly).</summary>
+        public string Kind { get; set; } = "episode";
     }
 
     /// <summary>⬇️ U seriálu zařadit všechny nalezené lepší verze dílů.</summary>
     [HttpPost("Suggestions/Series/{seriesId}/DownloadAll")]
     public ActionResult SeriesDownloadAll([FromRoute] string seriesId, [FromBody] SeriesBulkRequest r)
     {
-        var list = _state.Suggestions.GetAll().Where(x => x.Kind == "episode" && x.Status == "new" && x.SeriesId == seriesId && x.Candidate != null).ToList();
+        var kind = r.Kind == "missing" ? "missing" : "episode";
+        var list = _state.Suggestions.GetAll().Where(x => x.Kind == kind && x.Status == "new" && x.SeriesId == seriesId && x.Candidate != null).ToList();
         var n = 0;
         foreach (var x in list)
         {
@@ -771,7 +775,7 @@ public class FsController : ControllerBase
     [HttpPost("Suggestions/Series/{seriesId}/Reject")]
     public ActionResult SeriesReject([FromRoute] string seriesId)
     {
-        var list = _state.Suggestions.GetAll().Where(x => x.Kind == "episode" && x.Status == "new" && x.SeriesId == seriesId).ToList();
+        var list = _state.Suggestions.GetAll().Where(x => x.Kind is "episode" or "missing" && x.Status == "new" && x.SeriesId == seriesId).ToList();
         foreach (var x in list)
         {
             _state.Suggestions.Update(x.Id, y =>
@@ -783,6 +787,25 @@ public class FsController : ControllerBase
         }
 
         return Ok(new { success = true, message = $"Odmítnuto {list.Count} dílů." });
+    }
+
+    public sealed class FindMissingRequest
+    {
+        public bool Enable { get; set; } = true;
+    }
+
+    /// <summary>🔍 Zapnout/vypnout dohledávání chybějících dílů seriálu na Fastshare.</summary>
+    [HttpPost("Suggestions/Series/{seriesId}/FindMissing")]
+    public ActionResult FindMissing([FromRoute] string seriesId, [FromBody] FindMissingRequest r)
+    {
+        _state.Suggestions.SetFindMissing(seriesId, r.Enable);
+        if (!r.Enable)
+        {
+            return Ok(new { success = true, message = "Chybějící díly se u seriálu už nehledají." });
+        }
+
+        Advisor.Restart();
+        return Ok(new { success = true, message = "Hledám chybějící díly — kontrola se spustila znovu (díly jdou po stropu hledání za hodinu)." });
     }
 
     public sealed class SeriesTargetRequest
@@ -803,9 +826,8 @@ public class FsController : ControllerBase
 
         var episodes = _state.Suggestions.GetAll().Where(x => x.Kind == "episode" && x.SeriesId == seriesId).Select(x => x.ItemId);
         _state.Suggestions.SetSeriesTarget(seriesId, q, episodes);
-        var started = Advisor.Start(false);
-        return Ok(new { success = true, message = (q == null ? "Zpět na převažující kvalitu." : $"Sjednotit na {q}.")
-            + (started ? " Kontrola spuštěna." : " Projeví se, až doběhne právě běžící kontrola.") });
+        Advisor.Restart();
+        return Ok(new { success = true, message = (q == null ? "Zpět na převažující kvalitu." : $"Sjednotit na {q}.") + " Kontrola se spustila znovu." });
     }
 
     /// <summary>🗑 Smazat celý film (dostal se do knihovny omylem). GUI se předem ptá.</summary>

@@ -33,8 +33,12 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   - *seriály*: po seriálech — přehled kvalit dílů, cíl = převažující kvalita (nebo ručně „sjednotit na…"),
     díly pod cílem s nalezenou lepší verzí (hromadně „Stáhnout všech", nová verze jde do složky seriálu),
     díly ve víc verzích,
+  - *chybějící díly*: eviduje je TMDb plugin Jellyfinu („Importovat chybějící epizody", v Navržených jde
+    zapnout jedním tlačítkem); u seriálu se zapne „Dohledat chybějící" a díly se hledají v cílové kvalitě
+    (když není, nejlepší nižší) a ukládají do složky řady,
   - u víc verzí se zaškrtne, které smazat (Harry Potter: smazat SD, nechat 4K i Full HD),
-  - řazení: nalezená lepší verze první, od nejhorší / nejlepší kvality, velikost, název.
+  - řazení: nalezená lepší verze první, nejvíc ušetří místa, nejvíc kopií, od nejhorší / nejlepší kvality,
+    velikost, název.
   Kontrola běží na pozadí (jednou týdně, nebo tlačítkem), automatická hledání mají strop (výchozí 20/h);
   lepší verze se u položky hledá znovu po 30 dnech, po restartu Jellyfinu kontrola pokračuje.
 - Pojmenování podle Jellyfinu: `Filmy/Název (rok)/Název (rok) - [1080p CZ].mkv`,
@@ -69,4 +73,3 @@ Vydání: tag `vX.Y.Z` → GitHub Actions spustí testy, sestaví zip, vytvoří
 
 ## Plán
 
-- **Chybějící díly seriálů** (Jellyfin je zná z TMDb) v Navržených.

@@ -85,6 +85,14 @@ public class Suggestion
     /// <summary>Kvalita, na kterou se seriál sjednocuje (převažující kvalita jeho dílů).</summary>
     public string? TargetQuality { get; set; }
 
+    /// <summary>Chybějící díl: název dílu z TMDb a datum premiéry.</summary>
+    public string? EpisodeName { get; set; }
+
+    public DateTime? PremiereDate { get; set; }
+
+    /// <summary>Kam díl uložit (složka řady seriálu v knihovně).</summary>
+    public string? TargetDir { get; set; }
+
     /// <summary>Bez metadat: co se vyčetlo z názvu souboru (název a rok pro hledání v TMDb).</summary>
     public string? GuessTitle { get; set; }
 
@@ -120,6 +128,15 @@ public class SeriesSummary
 
     /// <summary>Dílů ve víc verzích.</summary>
     public int MultiVersion { get; set; }
+
+    /// <summary>Chybějících odvysílaných dílů (podle TMDb, které eviduje Jellyfin). null = Jellyfin je neeviduje.</summary>
+    public int? Missing { get; set; }
+
+    /// <summary>U seriálu se chybějící díly hledají na Fastshare (zapíná uživatel).</summary>
+    public bool FindMissing { get; set; }
+
+    /// <summary>Kolik místa uvolní smazání horších verzí dílů.</summary>
+    public long SavingsBytes { get; set; }
 }
 
 /// <summary>Stav kontroly knihovny pro GUI.</summary>
@@ -152,6 +169,9 @@ public class SuggestionState
 
     /// <summary>Kontrola rozběhnutá a nedokončená (restart Jellyfinu) — po startu pokračovat.</summary>
     public bool RunPending { get; set; }
+
+    /// <summary>Seriály, u kterých se chybějící díly hledají na Fastshare.</summary>
+    public HashSet<string> SeriesFindMissing { get; set; } = new();
 
     /// <summary>Ručně zvolená cílová kvalita seriálu (ID seriálu → kvalita).</summary>
     public Dictionary<string, string> SeriesTarget { get; set; } = new();
@@ -334,6 +354,31 @@ public sealed class SuggestionStore
             foreach (var id in episodeIds)
             {
                 _state.UpgradeCheckedUtc.Remove(id);
+            }
+
+            SaveLocked();
+        }
+    }
+
+    public bool FindMissing(string seriesId)
+    {
+        lock (_lock)
+        {
+            return _state.SeriesFindMissing.Contains(seriesId);
+        }
+    }
+
+    public void SetFindMissing(string seriesId, bool on)
+    {
+        lock (_lock)
+        {
+            if (on)
+            {
+                _state.SeriesFindMissing.Add(seriesId);
+            }
+            else
+            {
+                _state.SeriesFindMissing.Remove(seriesId);
             }
 
             SaveLocked();
