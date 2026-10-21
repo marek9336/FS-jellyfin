@@ -116,6 +116,9 @@ public class SuggestionState
     public DateTime? LastRunUtc { get; set; }
 
     public string? LastResult { get; set; }
+
+    /// <summary>Kontrola rozběhnutá a nedokončená (restart Jellyfinu) — po startu pokračovat.</summary>
+    public bool RunPending { get; set; }
 }
 
 /// <summary>Persistentní návrhy (JSON, atomický zápis jako fronta).</summary>
@@ -263,8 +266,15 @@ public sealed class SuggestionStore
         {
             _state.LastRunUtc = DateTime.UtcNow;
             _state.LastResult = result;
+            _state.RunPending = false;
             SaveLocked();
         }
+    }
+
+    public bool RunPending
+    {
+        get { lock (_lock) { return _state.RunPending; } }
+        set { lock (_lock) { _state.RunPending = value; SaveLocked(); } }
     }
 
     private void SaveLocked()

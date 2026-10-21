@@ -88,7 +88,10 @@ public sealed class LibraryAdvisor : BackgroundService
             var cfg = Plugin.Instance?.Configuration ?? new PluginConfiguration();
             var last = _state.Suggestions.LastRun.LastRunUtc;
             var due = cfg.SuggestIntervalDays > 0 && (last == null || DateTime.UtcNow - last.Value > TimeSpan.FromDays(cfg.SuggestIntervalDays));
-            if (manual || due)
+
+            // Nedokončená kontrola (restart uprostřed dvoudenního hledání) pokračuje — už prohledané
+            // filmy přeskočí (mají čas poslední kontroly), takže se nic nehledá dvakrát
+            if (manual || due || _state.Suggestions.RunPending)
             {
                 _runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 try
@@ -135,6 +138,7 @@ public sealed class LibraryAdvisor : BackgroundService
 
     private async Task RunAsync(PluginConfiguration cfg, bool force, CancellationToken ct)
     {
+        _state.Suggestions.RunPending = true;
         Status.Running = true;
         Status.Done = 0;
         Status.Phase = "Načítám filmy z knihovny";
@@ -301,7 +305,18 @@ public sealed class LibraryAdvisor : BackgroundService
                 break;
             }
 
-            var candidate = await FindBetterAsync(g.Main, target, cfg, ct).ConfigureAwait(false);
+            SuggestedFile? candidate;
+            try
+            {
+                candidate = await FindBetterAsync(g.Main, target, cfg, ct).ConfigureAwait(false);
+            }
+            catch (FastshareException)
+            {
+                Status.Phase = _state.OutageReason ?? "Hledání přerušeno";
+                complete = false;
+                break; // film se neoznačí jako prohledaný — příště na něj dojde znovu
+            }
+
             searched++;
             _state.Suggestions.MarkUpgradeChecked(id);
             if (dup != null)
@@ -374,6 +389,18 @@ public sealed class LibraryAdvisor : BackgroundService
             catch (Exception ex) when (ex is HttpRequestException or FastshareException or System.Text.Json.JsonException)
             {
                 _logger.LogWarning("Fastshare: hledání lepší verze \"{Title}\" selhalo: {Msg}", title, ex.Message);
+
+                // Fastshare přibrzdil (429/403 z Cloudflare) nebo je mimo (5xx, nedovoláme se) → hodinu
+                // pauza; smyčka kontroly výpadek uvidí a skončí, film se zkusí příště znovu
+                var code = (int?)(ex as HttpRequestException)?.StatusCode;
+                if (code is null or 429 or 403 or >= 500)
+                {
+                    _state.MarkOutage(TimeSpan.FromHours(1), code is 429 or 403
+                        ? $"Fastshare omezil hledání (HTTP {code}) — pauza hodinu, zvaž nižší strop v Nastavení"
+                        : "Fastshare nedostupný při hledání (" + ex.Message + ")");
+                    throw new FastshareException("přerušeno: " + ex.Message);
+                }
+
                 return null;
             }
 

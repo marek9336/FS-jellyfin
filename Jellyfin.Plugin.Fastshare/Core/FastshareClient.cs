@@ -178,7 +178,8 @@ public sealed class FastshareClient
         using var resp = await _http.GetAsync(url, ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
         {
-            throw new FastshareException($"hledání: HTTP {(int)resp.StatusCode}");
+            // se stavovým kódem — volající pozná přibrzdění (429/403 od Cloudflare) a výpadek (5xx)
+            throw new HttpRequestException($"hledání: HTTP {(int)resp.StatusCode}", null, resp.StatusCode);
         }
 
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
