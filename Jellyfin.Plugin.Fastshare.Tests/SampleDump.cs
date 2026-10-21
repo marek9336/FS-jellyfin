@@ -27,7 +27,7 @@ public class SampleDump
             foreach (var f in FastshareClient.ParseFiles(doc.RootElement))
             {
                 lines.Add(string.Join(" | ", f.FileName, f.Title, f.Year, f.Season is null ? "" : $"S{f.Season:D2}E{f.Episode:D2}",
-                    f.Quality, string.Join(",", f.AudioLangs), string.Join(",", f.SubtitleLangs), f.Codec, f.IsVideo ? "" : "NEVIDEO"));
+                    f.PackSeason is null ? "" : "PACK" + f.PackSeason, f.Quality, string.Join(",", f.AudioLangs), string.Join(",", f.SubtitleLangs), f.Codec, f.IsVideo ? "" : "NEVIDEO"));
             }
         }
 

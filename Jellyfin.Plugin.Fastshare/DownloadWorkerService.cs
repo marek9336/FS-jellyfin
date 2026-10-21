@@ -255,7 +255,8 @@ public sealed class DownloadWorkerService : BackgroundService
         try
         {
             // Už staženo ve stejné kvalitě? Nestahovat znovu (↻ v historii nastaví Overwrite).
-            if (!item.Overwrite)
+            // Archiv se kontroluje až po rozbalení, díl po dílu.
+            if (!item.Overwrite && !item.IsArchive)
             {
                 var dup = MediaOrganizer.FindDuplicate(cfg.MoviesPath, cfg.SeriesPath, item, cfg.DuplicateSizeTolerancePercent);
                 if (dup != null)
@@ -298,72 +299,15 @@ public sealed class DownloadWorkerService : BackgroundService
                     $"Málo kreditu ({account.CreditMb} MB, soubor {Dedup.FormatSize(item.SizeBytes)})");
             }
 
-            var extension = string.IsNullOrEmpty(Path.GetExtension(item.FileName)) ? ".mkv" : Path.GetExtension(item.FileName).ToLowerInvariant();
-            var finalPath = MediaOrganizer.BuildTargetPath(cfg.MoviesPath, cfg.SeriesPath, item, extension);
-            if (!item.Overwrite)
+            if (item.IsArchive)
             {
-                finalPath = MediaOrganizer.EnsureUniquePath(finalPath);
+                await RunArchiveAsync(item, hash, active, cfg, itemCt).ConfigureAwait(false);
+            }
+            else
+            {
+                await RunFileAsync(item, hash, active, cfg, dlStart, itemCt).ConfigureAwait(false);
             }
 
-            var partPath = finalPath + ".part";
-            _logger.LogInformation("Fastshare: stahuji \"{Title}\" → {Path}", DisplayTitle(item), finalPath);
-
-            var lastSave = DateTime.UtcNow;
-            void Progress(long done, long total, long speed)
-            {
-                active.BytesDone = done;
-                active.BytesTotal = total;
-                active.SpeedBps = speed;
-                if ((DateTime.UtcNow - lastSave).TotalSeconds >= 5)
-                {
-                    lastSave = DateTime.UtcNow;
-                    _state.Queue.Update(item.Id, i =>
-                    {
-                        i.BytesDone = done;
-                        i.BytesTotal = total;
-                    });
-                }
-            }
-
-            long sessionBytes;
-            try
-            {
-                sessionBytes = await _state.Engine.DownloadAsync(
-                    item.DownloadUrl, partPath, r => FastshareClient.PrepareDownload(r, hash), _state.Limiter,
-                    item.SizeBytes, Progress, itemCt).ConfigureAwait(false);
-            }
-            catch (NotAFileException)
-            {
-                // Klíč mohl vypršet dřív, než si myslíme — jednou se přihlásit znovu a zkusit
-                _state.Client.InvalidateSession();
-                hash = await _state.Client.GetHashAsync(itemCt, force: true).ConfigureAwait(false)
-                    ?? throw new FastshareException("Přihlášení selhalo: " + _state.Client.LastError);
-                sessionBytes = await _state.Engine.DownloadAsync(
-                    item.DownloadUrl, partPath, r => FastshareClient.PrepareDownload(r, hash), _state.Limiter,
-                    item.SizeBytes, Progress, itemCt).ConfigureAwait(false);
-            }
-
-            File.Move(partPath, finalPath, overwrite: true);
-            _state.Queue.AddDailyBytes(sessionBytes);
-            _state.ClearOutage();
-
-            var seconds = (DateTime.UtcNow - dlStart).TotalSeconds;
-            if (sessionBytes >= 50L * 1024 * 1024 && seconds >= 10)
-            {
-                _state.Queue.RecordSpeed((long)(sessionBytes / seconds));
-            }
-
-            _state.Queue.Update(item.Id, i =>
-            {
-                i.Status = QueueItemStatus.Done;
-                i.CompletedUtc = DateTime.UtcNow;
-                i.TargetPath = finalPath;
-                i.BytesDone = i.BytesTotal = new FileInfo(finalPath).Length;
-                i.ErrorMessage = null;
-                i.ForceNow = false;
-                i.RetryAfterUtc = null;
-            });
-            _logger.LogInformation("Fastshare: dokončeno \"{Title}\"", DisplayTitle(item));
 
             if (cfg.TriggerLibraryScan)
             {
@@ -438,6 +382,205 @@ public sealed class DownloadWorkerService : BackgroundService
         }
     }
 
+    /// <summary>Jeden soubor: stáhnout jako .part a přesunout na místo v knihovně.</summary>
+    private async Task RunFileAsync(QueueItem item, string hash, ActiveDownload active, PluginConfiguration cfg, DateTime dlStart, CancellationToken itemCt)
+    {
+        var extension = string.IsNullOrEmpty(Path.GetExtension(item.FileName)) ? ".mkv" : Path.GetExtension(item.FileName).ToLowerInvariant();
+        var finalPath = MediaOrganizer.BuildTargetPath(cfg.MoviesPath, cfg.SeriesPath, item, extension);
+        if (!item.Overwrite)
+        {
+            finalPath = MediaOrganizer.EnsureUniquePath(finalPath);
+        }
+
+        var partPath = finalPath + ".part";
+        _logger.LogInformation("Fastshare: stahuji \"{Title}\" → {Path}", DisplayTitle(item), finalPath);
+
+        var lastSave = DateTime.UtcNow;
+        void Progress(long done, long total, long speed)
+        {
+            active.BytesDone = done;
+            active.BytesTotal = total;
+            active.SpeedBps = speed;
+            if ((DateTime.UtcNow - lastSave).TotalSeconds >= 5)
+            {
+                lastSave = DateTime.UtcNow;
+                _state.Queue.Update(item.Id, i =>
+                {
+                    i.BytesDone = done;
+                    i.BytesTotal = total;
+                });
+            }
+        }
+
+        long sessionBytes;
+        try
+        {
+            sessionBytes = await _state.Engine.DownloadAsync(
+                item.DownloadUrl, partPath, r => FastshareClient.PrepareDownload(r, hash), _state.Limiter,
+                item.SizeBytes, Progress, itemCt).ConfigureAwait(false);
+        }
+        catch (NotAFileException)
+        {
+            // Klíč mohl vypršet dřív, než si myslíme — jednou se přihlásit znovu a zkusit
+            _state.Client.InvalidateSession();
+            hash = await _state.Client.GetHashAsync(itemCt, force: true).ConfigureAwait(false)
+                ?? throw new FastshareException("Přihlášení selhalo: " + _state.Client.LastError);
+            sessionBytes = await _state.Engine.DownloadAsync(
+                item.DownloadUrl, partPath, r => FastshareClient.PrepareDownload(r, hash), _state.Limiter,
+                item.SizeBytes, Progress, itemCt).ConfigureAwait(false);
+        }
+
+        File.Move(partPath, finalPath, overwrite: true);
+        _state.Queue.AddDailyBytes(sessionBytes);
+        _state.ClearOutage();
+
+        var seconds = (DateTime.UtcNow - dlStart).TotalSeconds;
+        if (sessionBytes >= 50L * 1024 * 1024 && seconds >= 10)
+        {
+            _state.Queue.RecordSpeed((long)(sessionBytes / seconds));
+        }
+
+        _state.Queue.Update(item.Id, i =>
+        {
+            i.Status = QueueItemStatus.Done;
+            i.CompletedUtc = DateTime.UtcNow;
+            i.TargetPath = finalPath;
+            i.BytesDone = i.BytesTotal = new FileInfo(finalPath).Length;
+            i.ErrorMessage = null;
+            i.ForceNow = false;
+            i.RetryAfterUtc = null;
+        });
+        _logger.LogInformation("Fastshare: dokončeno \"{Title}\"", DisplayTitle(item));
+    }
+
+    /// <summary>
+    /// Archiv: stáhnout všechny části do skryté pracovní složky v knihovně (stejný disk → přesun je
+    /// okamžitý), rozbalit, videa roztřídit podle SxxEyy, pracovní složku smazat. Stažené části
+    /// zůstávají do úspěšného rozbalení, takže pád uprostřed naváže.
+    /// </summary>
+    private async Task RunArchiveAsync(QueueItem item, string hash, ActiveDownload active, PluginConfiguration cfg, CancellationToken itemCt)
+    {
+        var parts = item.Parts is { Count: > 0 }
+            ? item.Parts
+            : new List<ArchivePart> { new() { FileId = item.FileId, FileName = item.FileName, DownloadUrl = item.DownloadUrl, SizeBytes = item.SizeBytes } };
+        var root = item.MediaType == MediaKind.Episode ? cfg.SeriesPath : cfg.MoviesPath;
+        var work = Path.Combine(root, ".fastshare-tmp", item.Id.ToString("N"));
+        var extractDir = Path.Combine(work, "rozbaleno");
+        Directory.CreateDirectory(work);
+
+        // Místo: archiv + rozbalený obsah (komprese videa skoro nic neušetří) + rezerva
+        var total = parts.Sum(p => p.SizeBytes);
+        var already = parts.Sum(p => File.Exists(Path.Combine(work, PartName(p))) ? new FileInfo(Path.Combine(work, PartName(p))).Length : 0);
+        var need = (long)((total * 2.1) - already) + ((long)cfg.MinFreeSpaceGb * 1024 * 1024 * 1024);
+        var free = DownloadEngine.GetFreeSpace(root);
+        if (free > 0 && free < need)
+        {
+            throw new FastshareException($"Málo místa na rozbalení: volno {Dedup.FormatSize(free)}, potřeba {Dedup.FormatSize(need)} (archiv + obsah + minimum)");
+        }
+
+        // 1) Stáhnout části postupně
+        long doneParts = 0;
+        var paths = new List<string>();
+        for (var n = 0; n < parts.Count; n++)
+        {
+            var part = parts[n];
+            var path = Path.Combine(work, PartName(part));
+            paths.Add(path);
+            active.Title = $"{DisplayTitle(item)} — část {n + 1}/{parts.Count}";
+            var baseDone = doneParts;
+            void Progress(long d, long t, long speed)
+            {
+                active.BytesDone = baseDone + d;
+                active.BytesTotal = Math.Max(total, baseDone + t);
+                active.SpeedBps = speed;
+            }
+
+            if (File.Exists(path) && part.SizeBytes > 0 && new FileInfo(path).Length == part.SizeBytes)
+            {
+                doneParts += part.SizeBytes;
+                continue;
+            }
+
+            long got;
+            try
+            {
+                got = await _state.Engine.DownloadAsync(
+                    part.DownloadUrl, path + ".part", r => FastshareClient.PrepareDownload(r, hash), _state.Limiter,
+                    part.SizeBytes, Progress, itemCt).ConfigureAwait(false);
+            }
+            catch (NotAFileException)
+            {
+                _state.Client.InvalidateSession();
+                hash = await _state.Client.GetHashAsync(itemCt, force: true).ConfigureAwait(false)
+                    ?? throw new FastshareException("Přihlášení selhalo: " + _state.Client.LastError);
+                var h = hash;
+                got = await _state.Engine.DownloadAsync(
+                    part.DownloadUrl, path + ".part", r => FastshareClient.PrepareDownload(r, h), _state.Limiter,
+                    part.SizeBytes, Progress, itemCt).ConfigureAwait(false);
+            }
+
+            File.Move(path + ".part", path, overwrite: true);
+            _state.Queue.AddDailyBytes(got);
+            doneParts += new FileInfo(path).Length;
+        }
+
+        _state.ClearOutage();
+
+        // 2) Rozbalit (CPU/disk — mimo vlákno workeru)
+        if (Directory.Exists(extractDir))
+        {
+            Directory.Delete(extractDir, true); // zbytek po předchozím pokusu
+        }
+
+        active.Title = $"{DisplayTitle(item)} — rozbaluji";
+        active.SpeedBps = 0;
+        var first = paths[0];
+        var extracted = await Task.Run(
+            () => ArchiveExtractor.Extract(paths, extractDir, (d, t) =>
+            {
+                active.BytesDone = d;
+                active.BytesTotal = t;
+            }, itemCt),
+            itemCt).ConfigureAwait(false);
+
+        // 3) Roztřídit do knihovny
+        var result = ArchiveExtractor.Organize(extracted, item, cfg.MoviesPath, cfg.SeriesPath, cfg.DuplicateSizeTolerancePercent, item.Overwrite);
+        _logger.LogInformation("Fastshare: archiv \"{Title}\" ({First}) rozbalen — {Summary}", DisplayTitle(item), Path.GetFileName(first), result.Summary());
+        if (result.Moved.Count == 0 && result.Skipped.Count == 0)
+        {
+            throw new FastsharePermanentException("V archivu nebylo žádné video (" + result.Summary() + ")");
+        }
+
+        try
+        {
+            Directory.Delete(work, true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Fastshare: pracovní složku {Dir} se nepodařilo smazat: {Msg}", work, ex.Message);
+        }
+
+        var target = result.Moved.Count > 0 ? Path.GetDirectoryName(result.Moved[0]) : result.Skipped.FirstOrDefault();
+        _state.Queue.Update(item.Id, i =>
+        {
+            i.Status = QueueItemStatus.Done;
+            i.CompletedUtc = DateTime.UtcNow;
+            i.TargetPath = target;
+            i.BytesDone = i.BytesTotal = total;
+            i.ArchiveResult = result.Summary();
+            i.ErrorMessage = null;
+            i.ForceNow = false;
+            i.RetryAfterUtc = null;
+        });
+    }
+
+    /// <summary>Název části na disku: bezpečný, a s původní příponou (podle ní SharpCompress pozná typ).</summary>
+    private static string PartName(ArchivePart p)
+    {
+        var name = MediaOrganizer.Sanitize(Path.GetFileName(p.FileName));
+        return name.Length > 0 ? name : p.FileId + ".bin";
+    }
+
     private void Requeue(Guid id, string? message, int stoppedPercent = 0)
     {
         _state.Queue.Update(id, i =>
@@ -478,7 +621,9 @@ public sealed class DownloadWorkerService : BackgroundService
         a.BytesTotal > 0 ? (int)Math.Clamp(a.BytesDone * 100 / a.BytesTotal, 0L, 100L) : 0;
 
     public static string DisplayTitle(QueueItem item) =>
-        item.MediaType == MediaKind.Episode
+        item.IsArchive
+            ? (item.SeriesTitle ?? item.Title) + (item.ArchiveSeason is > 0 ? $" — {item.ArchiveSeason}. řada" : string.Empty) + " (archiv)"
+            : item.MediaType == MediaKind.Episode
             ? $"{item.SeriesTitle ?? item.Title} S{item.Season:D2}E{item.Episode:D2}"
             : item.Year.HasValue ? $"{item.Title} ({item.Year})" : item.Title;
 

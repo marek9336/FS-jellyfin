@@ -14,6 +14,16 @@ namespace Jellyfin.Plugin.Fastshare.Core;
 /// </summary>
 public static class FileNameParser
 {
+    private static readonly HashSet<string> ArchiveExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".zip", ".rar", ".7z",
+    };
+
+    // Vícedílné archivy: „x.part2.rar", „x.r00" (= 2. díl po x.rar), „x.7z.001", „x.zip.001", „x.001"
+    private static readonly Regex PartRar = new(@"^(?<base>.+\.part)(?<n>\d{1,3})\.rar$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex OldRar = new(@"^(?<base>.+)\.r(?<n>\d{2})$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex Numbered = new(@"^(?<base>.+?)(?:\.(?:7z|zip|rar))?\.(?<n>\d{3})$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".mkv", ".mp4", ".avi", ".m4v", ".ts", ".m2ts", ".wmv", ".mov", ".mpg", ".mpeg", ".webm", ".flv", ".divx", ".ogm",
@@ -26,6 +36,13 @@ public static class FileNameParser
     // 11x07, 1x02 (ne rozlišení 1920x1080 — díl max. 3 číslice a řada max. 2)
     private static readonly Regex NxNN = new(
         @"(?<![a-z0-9])(?<s>\d{1,2})x(?<e>\d{2,3})(?![0-9a-z])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Celá řada bez dílu: „9. série", „5 serie", „1.serie", „Season 3", „S02" (bez E)
+    private static readonly Regex PackSeasonRe = new(
+        @"(?<![a-z0-9])(?<s>\d{1,2})\s*\.?\s*(?:serie|series|season|sezona|rada)(?![a-z])"
+        + @"|(?<![a-z0-9])(?:serie|series|season|sezona|rada)\s*\.?\s*(?<s>\d{1,2})(?![0-9])"
+        + @"|(?<![a-z0-9])s(?<s>\d{1,2})(?![0-9]|\s*e\d|x\d)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // Rok v závorce má přednost: „Matrix 1 (1999)"
     private static readonly Regex YearInParens = new(@"[\(\[](?<y>(19|20)\d{2})[\)\],]", RegexOptions.Compiled);
@@ -69,6 +86,7 @@ public static class FileNameParser
 
         f.Extension = ext.ToLowerInvariant();
         f.IsVideo = VideoExtensions.Contains(f.Extension);
+        DetectArchive(f, name);
         var stem = ext.Length > 0 ? name[..^ext.Length] : name;
         var plain = RemoveDiacritics(stem).ToLowerInvariant();
         var tokens = Tokens(plain);
@@ -87,6 +105,11 @@ public static class FileNameParser
             f.Season = int.Parse(m.Groups["s"].Value, CultureInfo.InvariantCulture);
             f.Episode = int.Parse(m.Groups["e"].Value, CultureInfo.InvariantCulture);
             markerIndex = m.Index;
+        }
+        else if (PackSeasonRe.Match(plain) is { Success: true } pm)
+        {
+            f.PackSeason = int.Parse(pm.Groups["s"].Value, CultureInfo.InvariantCulture);
+            markerIndex = pm.Index;
         }
 
         // ── Rok ───────────────────────────────────────────────────
@@ -146,6 +169,36 @@ public static class FileNameParser
 
         // ── Název: text před prvním technickým údajem ─────────────
         f.Title = ExtractTitle(stem, plain, markerIndex, yearIndex);
+    }
+
+    /// <summary>Rozpozná archiv a díl vícedílného archivu.</summary>
+    private static void DetectArchive(FsFile f, string name)
+    {
+        Match m;
+        if ((m = PartRar.Match(name)).Success)
+        {
+            f.IsArchive = true;
+            f.ArchivePart = int.Parse(m.Groups["n"].Value, CultureInfo.InvariantCulture);
+            f.ArchiveBase = m.Groups["base"].Value;
+        }
+        else if ((m = OldRar.Match(name)).Success)
+        {
+            // starý styl: x.rar je 1. díl, x.r00 druhý, x.r01 třetí…
+            f.IsArchive = true;
+            f.ArchivePart = int.Parse(m.Groups["n"].Value, CultureInfo.InvariantCulture) + 2;
+            f.ArchiveBase = m.Groups["base"].Value + ".rar";
+        }
+        else if ((m = Numbered.Match(name)).Success)
+        {
+            f.IsArchive = true;
+            f.ArchivePart = int.Parse(m.Groups["n"].Value, CultureInfo.InvariantCulture);
+            f.ArchiveBase = m.Groups["base"].Value;
+        }
+        else if (ArchiveExtensions.Contains(Path.GetExtension(name)))
+        {
+            f.IsArchive = true;
+            f.ArchiveBase = name;
+        }
     }
 
     /// <summary>Normalizace pro porovnávání názvů: bez diakritiky, malá písmena, jen slova.</summary>

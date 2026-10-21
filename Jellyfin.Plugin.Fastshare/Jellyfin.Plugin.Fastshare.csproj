@@ -12,6 +12,9 @@
 
   <ItemGroup>
     <PackageReference Include="Jellyfin.Controller" Version="12.0.0" />
+    <!-- Rozbalování archivů. Jellyfin 12.2 má SharpCompress 0.50.4 sám (/jellyfin/SharpCompress.dll),
+         plugin ho proto nepřibaluje (ExcludeAssets=runtime) — dvě verze by se v procesu pohádaly. -->
+    <PackageReference Include="SharpCompress" Version="0.50.4" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>

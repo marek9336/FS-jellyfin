@@ -169,6 +169,31 @@ public sealed class DownloadEngine
         return sessionBytes;
     }
 
+    /// <summary>
+    /// Velikost souboru dotazem na první bajt (Range 0-0 → Content-Range „bytes 0-0/CELKEM").
+    /// Zároveň ověří, že odkaz s přihlášením opravdu vrací soubor. null = nepodařilo se.
+    /// </summary>
+    public async Task<long?> ProbeSizeAsync(string url, Action<HttpRequestMessage> prepare, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        prepare(req);
+        req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 0);
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var type = resp.Content.Headers.ContentType?.MediaType ?? string.Empty;
+        if (type.StartsWith("text/", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return resp.Content.Headers.ContentRange?.Length
+            ?? (resp.StatusCode == HttpStatusCode.OK ? resp.Content.Headers.ContentLength : null);
+    }
+
     private static async Task<string> ReadSnippet(HttpResponseMessage resp, CancellationToken ct)
     {
         try

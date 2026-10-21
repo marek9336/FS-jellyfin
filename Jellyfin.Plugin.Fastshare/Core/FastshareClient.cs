@@ -231,6 +231,61 @@ public sealed class FastshareClient
         return all;
     }
 
+    private static readonly System.Text.RegularExpressions.Regex LinkRe = new(
+        @"^https?://(?:www\.)?fastshare\.(?:cloud|cz)/(?<id>\d+)(?:/[^\s?#]*)?", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    private static readonly System.Text.RegularExpressions.Regex TitleRe = new(
+        @"<title>\s*(?<name>.+?)\s+(?:online ke zhlédnutí a stažení|ke stažení)\s*\|", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
+
+    private static readonly System.Text.RegularExpressions.Regex DataLinkRe = new(
+        @"(?:https?:)?//(?<host>data\d+\.fastshare\.(?:cloud|cz))/download\.php\?id=(?<id>\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>Je to odkaz na soubor na webu Fastshare? Vrací ID souboru.</summary>
+    public static string? FileIdFromLink(string link)
+    {
+        var m = LinkRe.Match((link ?? string.Empty).Trim());
+        return m.Success ? m.Groups["id"].Value : null;
+    }
+
+    /// <summary>
+    /// Soubor podle odkazu z webu Fastshare (https://fastshare.cloud/ID/nazev). Hledání přes API
+    /// vrací jen videa — archivy (rar/zip/7z) a cokoli dalšího jde do pluginu dostat jen takhle.
+    /// Název se bere z titulku stránky, odkaz ke stažení z jejího obsahu. Velikost doplní volající.
+    /// </summary>
+    public async Task<FsFile> ResolveLinkAsync(string link, CancellationToken ct)
+    {
+        var id = FileIdFromLink(link) ?? throw new FastsharePermanentException("Tohle není odkaz na soubor na Fastshare (https://fastshare.cloud/číslo/název).");
+        using var req = new HttpRequestMessage(HttpMethod.Get, link.Trim());
+        req.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Jellyfin-Fastshare)");
+        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        var html = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
+        {
+            throw new FastshareException($"stránka souboru: HTTP {(int)resp.StatusCode}");
+        }
+
+        if (html.Contains("Tento soubor již není dostupný", StringComparison.Ordinal))
+        {
+            throw new FastsharePermanentException("Soubor už na Fastshare není (nebo je odkaz neúplný — zkopíruj ho celý i s názvem).");
+        }
+
+        var name = TitleRe.Match(html) is { Success: true } t ? System.Net.WebUtility.HtmlDecode(t.Groups["name"].Value.Trim()) : null;
+        var data = DataLinkRe.Matches(html).FirstOrDefault(m => m.Groups["id"].Value == id);
+        if (string.IsNullOrEmpty(name) || data == null)
+        {
+            throw new FastshareException("Ze stránky souboru se nepodařilo vyčíst název nebo odkaz ke stažení (změnil se web Fastshare?).");
+        }
+
+        var f = new FsFile
+        {
+            Id = id,
+            FileName = name,
+            DownloadUrl = $"https://{data.Groups["host"].Value}/download.php?id={id}",
+        };
+        FileNameParser.Fill(f);
+        return f;
+    }
+
     /// <summary>
     /// Připraví požadavek na stažení: cookie s přihlašovacím klíčem. Fastshare odkazy
     /// přesměrovávají na datový server, cookie se proto přidává ke každému požadavku

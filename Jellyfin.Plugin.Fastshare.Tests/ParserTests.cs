@@ -72,6 +72,36 @@ public class ParserTests
         Assert.Null(f.Year);
     }
 
+    [Theory]
+    [InlineData("teorie velkeho tresku 9. série.rar", "Teorie velkeho tresku", 9, null, null)]
+    [InlineData("Pratele 5. serie.7z", "Pratele", 5, null, null)]
+    [InlineData("Simpsnovi 01.serie.rar", "Simpsnovi", 1, null, null)]
+    [InlineData("Breaking.Bad.S02.1080p.CZ.part2.rar", "Breaking Bad", 2, 2, "Breaking.Bad.S02.1080p.CZ.part")]
+    [InlineData("Dr.House.Season.3.r00", "Dr House", 3, 2, "Dr.House.Season.3.rar")]
+    [InlineData("Seriál S03.7z.001", "Seriál", 3, 1, "Seriál S03")]
+    public void Archives(string name, string title, int season, int? part, string? baseName)
+    {
+        var f = P(name);
+        Assert.True(f.IsArchive);
+        Assert.False(f.IsVideo);
+        Assert.Equal(title, f.Title);
+        Assert.Equal(season, f.PackSeason);
+        Assert.Null(f.Episode);
+        Assert.Equal(part, f.ArchivePart);
+        if (baseName != null)
+        {
+            Assert.Equal(baseName, f.ArchiveBase);
+        }
+    }
+
+    [Fact]
+    public void EpisodeIsNotPackSeason()
+    {
+        var f = P("Breaking Bad S02E03 CZ.mkv");
+        Assert.Null(f.PackSeason);
+        Assert.False(f.IsArchive);
+    }
+
     [Fact]
     public void SearchTermWithoutDiacritics() =>
         Assert.Equal("Teorie velkeho tresku S01", FastshareClient.SearchTerm(" Teorie velkého třesku S01 "));

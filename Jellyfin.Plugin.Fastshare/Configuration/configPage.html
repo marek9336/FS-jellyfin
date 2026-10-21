@@ -67,6 +67,21 @@
                         </select>
                     </div>
                 </div>
+                <details class="fs-card" id="fsLinksBox" style="margin-top:1em;">
+                    <summary style="cursor:pointer;"><strong>📎 Archivy a odkazy z webu Fastshare</strong>
+                        <span style="opacity:.7;">— celé řady seriálů v .rar / .zip / .7z</span></summary>
+                    <div class="fieldDescription" style="margin:.6em 0;">
+                        Hledání přes API Fastshare vidí jen videa. Archivy najdeš na
+                        <a href="https://fastshare.cloud" target="_blank" rel="noopener">fastshare.cloud</a>
+                        v záložce <strong>Archivy</strong> — zkopíruj odkaz (u vícedílného archivu všechny části, každý na řádek)
+                        a vlož ho sem. Plugin archiv stáhne, rozbalí a díly roztřídí do knihovny podle S01E02 v názvech.
+                        Funguje to i pro odkazy na obyčejná videa.
+                    </div>
+                    <textarea id="fsLinks" rows="3" style="width:100%; box-sizing:border-box; background:#111; color:inherit; border:1px solid #444; border-radius:4px; padding:.5em;"
+                              placeholder="https://fastshare.cloud/27434249/teorie-velkeho-tresku-9.-serie.rar"></textarea>
+                    <button is="emby-button" type="button" id="fsLinksBtn" class="raised button-submit" style="margin-top:.5em;"><span>Načíst odkazy</span></button>
+                    <div id="fsLinkResults" style="margin-top:.6em;"></div>
+                </details>
                 <div id="fsSearchInfo" class="fs-msg"></div>
                 <div id="fsSeriesHint" class="hide fs-card"></div>
                 <div id="fsResults"></div>
@@ -387,27 +402,7 @@
             }
 
             var html = '';
-            files.forEach(function (f) {
-                var what = f.season != null
-                    ? '📺 ' + esc(f.title) + ' ' + epTag(f.season, f.episode)
-                    : '🎬 ' + esc(f.title) + (f.year ? ' (' + f.year + ')' : '');
-                html += '<div class="fs-row" data-id="' + esc(f.id) + '">'
-                    + (f.thumbnail ? '<img class="fs-thumb" loading="lazy" src="' + esc(f.thumbnail) + '" alt="">' : '')
-                    + '<div class="fs-main"><div class="fs-name">' + esc(f.fileName) + '</div>'
-                    + '<div class="fs-sub">' + what + '</div><div>'
-                    + (f.quality ? '<span class="fs-badge fs-b-q">' + esc(f.quality) + '</span>' : '')
-                    + langBadges(f)
-                    + '<span class="fs-badge">' + esc(f.sizeText) + '</span>'
-                    + (f.durationSec ? '<span class="fs-badge">' + fmtDuration(f.durationSec) + '</span>' : '')
-                    + (f.codec ? '<span class="fs-badge">' + esc(f.codec.toUpperCase()) + '</span>' : '')
-                    + (f.hdr ? '<span class="fs-badge">HDR</span>' : '')
-                    + (f.dv ? '<span class="fs-badge">DV</span>' : '')
-                    + (!f.isVideo ? '<span class="fs-badge fs-b-warn">není video</span>' : '')
-                    + (f.isSample ? '<span class="fs-badge fs-b-warn">ukázka</span>' : '')
-                    + '</div></div>'
-                    + '<button is="emby-button" type="button" class="raised fs-btn fs-add">⬇️ Zařadit</button>'
-                    + '</div>';
-            });
+            files.forEach(function (f) { html += fileRow(f); });
             el('fsResults').innerHTML = html || '<div class="fs-msg">Nic (zkus vypnout filtry).</div>';
             el('fsResults').querySelectorAll('.fs-add').forEach(function (btn) {
                 btn.addEventListener('click', function () {
@@ -423,6 +418,29 @@
             el('fsPager').innerHTML = pager;
             if (el('fsPrev')) el('fsPrev').addEventListener('click', function () { doSearch(lastSearch.term, data.page - 1); });
             if (el('fsNext')) el('fsNext').addEventListener('click', function () { doSearch(lastSearch.term, data.page + 1); });
+        }
+
+        function fileRow(f, extraBadges) {
+                var what = f.season != null
+                    ? '📺 ' + esc(f.title) + ' ' + epTag(f.season, f.episode)
+                    : '🎬 ' + esc(f.title) + (f.year ? ' (' + f.year + ')' : '');
+                return '<div class="fs-row" data-id="' + esc(f.id) + '">'
+                    + (f.thumbnail ? '<img class="fs-thumb" loading="lazy" src="' + esc(f.thumbnail) + '" alt="">' : '')
+                    + '<div class="fs-main"><div class="fs-name">' + esc(f.fileName) + '</div>'
+                    + '<div class="fs-sub">' + what + '</div><div>'
+                    + (f.quality ? '<span class="fs-badge fs-b-q">' + esc(f.quality) + '</span>' : '')
+                    + langBadges(f)
+                    + '<span class="fs-badge">' + esc(f.sizeText) + '</span>'
+                    + (f.durationSec ? '<span class="fs-badge">' + fmtDuration(f.durationSec) + '</span>' : '')
+                    + (f.codec ? '<span class="fs-badge">' + esc(f.codec.toUpperCase()) + '</span>' : '')
+                    + (f.hdr ? '<span class="fs-badge">HDR</span>' : '')
+                    + (f.dv ? '<span class="fs-badge">DV</span>' : '')
+                    + (f.isArchive ? '<span class="fs-badge fs-b-q">📦 archiv</span>' : (!f.isVideo ? '<span class="fs-badge fs-b-warn">není video</span>' : ''))
+                    + (f.isSample ? '<span class="fs-badge fs-b-warn">ukázka</span>' : '')
+                    + (extraBadges || '')
+                    + '</div></div>'
+                    + '<button is="emby-button" type="button" class="raised fs-btn fs-add">⬇️ Zařadit</button>'
+                    + '</div>';
         }
 
         function openAddForm(row, f) {
@@ -479,13 +497,117 @@
             el(id).addEventListener('change', function () { if (lastSearch.data) renderResults(); });
         });
 
+        // ── Odkazy z webu (archivy) ──────────────────────────────
+        var linkFiles = [];
+
+        function loadLinks() {
+            var text = el('fsLinks').value;
+            if (!text.trim()) return;
+            el('fsLinkResults').innerHTML = '<div class="fs-msg">Načítám…</div>';
+            api('POST', 'Links', { Text: text }).then(renderLinks, function (xhr) {
+                el('fsLinkResults').innerHTML = '<div class="fs-msg">❌ ' + esc(errMsg(xhr, 'Načtení selhalo.')) + '</div>';
+            });
+        }
+
+        function renderLinks(r) {
+            linkFiles = r.files || [];
+            var html = '';
+            (r.errors || []).forEach(function (e) { html += '<div class="fs-msg">⚠️ ' + esc(e) + '</div>'; });
+            if (!r.loggedIn) html += '<div class="fs-msg">ℹ️ Nejsi přihlášený — velikost se zjistí až při stahování.</div>';
+
+            // Archivy seskupit po částech (stejný základ názvu), videa zvlášť
+            var groups = {}, order = [];
+            linkFiles.forEach(function (f) {
+                if (!f.isArchive) return;
+                var key = f.archiveBase || f.id;
+                if (!groups[key]) { groups[key] = []; order.push(key); }
+                groups[key].push(f);
+            });
+            order.forEach(function (key) {
+                var parts = groups[key].sort(function (a, b) { return (a.archivePart || 1) - (b.archivePart || 1); });
+                var f = parts[0];
+                var size = parts.reduce(function (n, p) { return n + (p.sizeBytes || 0); }, 0);
+                var nums = parts.map(function (p) { return p.archivePart || 1; });
+                var missing = [];
+                for (var n = 1; n <= Math.max.apply(null, nums); n++) if (nums.indexOf(n) < 0) missing.push(n);
+                html += '<div class="fs-row fs-arch" data-key="' + esc(key) + '"><div class="fs-main">'
+                    + '<div class="fs-name">📦 ' + esc(f.fileName) + (parts.length > 1 ? ' <span style="opacity:.7;">+ ' + (parts.length - 1) + ' další části</span>' : '') + '</div>'
+                    + '<div class="fs-sub">' + esc(f.title) + (f.packSeason ? ' · ' + f.packSeason + '. řada' : '') + '</div><div>'
+                    + '<span class="fs-badge fs-b-q">📦 archiv · ' + parts.length + ' ' + (parts.length === 1 ? 'část' : (parts.length < 5 ? 'části' : 'částí')) + '</span>'
+                    + langBadges(f)
+                    + '<span class="fs-badge">' + (size ? fmtBytes(size) : 'velikost ?') + '</span>'
+                    + (missing.length ? '<span class="fs-badge fs-b-warn">chybí část ' + missing.join(', ') + ' — přidej odkaz</span>' : '')
+                    + '</div></div>'
+                    + '<button is="emby-button" type="button" class="raised fs-btn fs-arch-add">⬇️ Zařadit</button></div>';
+            });
+            linkFiles.filter(function (f) { return !f.isArchive; }).forEach(function (f) { html += fileRow(f); });
+            el('fsLinkResults').innerHTML = html || '<div class="fs-msg">Nic.</div>';
+
+            el('fsLinkResults').querySelectorAll('.fs-arch-add').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var row = btn.closest('.fs-row');
+                    openArchiveForm(row, groups[row.getAttribute('data-key')]);
+                });
+            });
+            el('fsLinkResults').querySelectorAll('.fs-row:not(.fs-arch) .fs-add').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var row = btn.closest('.fs-row');
+                    var f = linkFiles.filter(function (x) { return x.id === row.getAttribute('data-id'); })[0];
+                    openAddForm(row, f);
+                });
+            });
+        }
+
+        function openArchiveForm(row, parts) {
+            var old = row.querySelector('.fs-form');
+            if (old) { old.remove(); return; }
+            var f = parts[0];
+            var form = document.createElement('div');
+            form.className = 'fs-form';
+            form.innerHTML =
+                '<div class="selectContainer" style="width:130px;"><select is="emby-select" class="b-type" label="Obsah">'
+                + '<option value="series" selected>Seriál</option><option value="movie">Film</option></select></div>'
+                + '<div class="inputContainer" style="flex:1; min-width:200px;"><input is="emby-input" type="text" class="b-title" label="Název v knihovně" value="' + esc(f.title) + '"></div>'
+                + '<div class="inputContainer" style="width:90px;"><input is="emby-input" type="number" class="b-year" label="Rok" value="' + (f.year || '') + '"></div>'
+                + '<div class="inputContainer b-ser" style="width:150px;"><input is="emby-input" type="number" class="b-season" label="Řada (když ji díly nemají)" value="' + (f.packSeason || '') + '"></div>'
+                + '<button is="emby-button" type="button" class="raised button-submit fs-btn b-go">Zařadit</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn b-now" title="Obejde časové okno">⚡ Stáhnout teď</button>'
+                + '<div class="fieldDescription" style="width:100%;">Díly se v archivu poznají podle S01E02 / 1x02 v názvech souborů. '
+                + 'Co se poznat nepodaří, skončí ve skryté složce <code>.nerozpoznane</code> u seriálu. Na rozbalení je potřeba zhruba dvojnásobek velikosti archivu.</div>'
+                + '<div class="b-msg fs-msg" style="width:100%;"></div>';
+            row.appendChild(form);
+            var typeSel = form.querySelector('.b-type');
+            typeSel.addEventListener('change', function () { form.querySelector('.b-ser').style.display = typeSel.value === 'series' ? '' : 'none'; });
+            function go(now) {
+                var body = {
+                    Parts: parts.map(function (p) { return { FileId: p.id, FileName: p.fileName, DownloadUrl: p.downloadUrl, SizeBytes: p.sizeBytes || 0 }; }),
+                    Title: form.querySelector('.b-title').value,
+                    Year: parseInt(form.querySelector('.b-year').value, 10) || null,
+                    MediaType: typeSel.value,
+                    Season: parseInt(form.querySelector('.b-season').value, 10) || null,
+                    Quality: f.quality, Language: f.language, ForceNow: !!now
+                };
+                form.querySelector('.b-msg').textContent = '…';
+                api('POST', 'QueueArchive', body).then(function (r) {
+                    form.querySelector('.b-msg').textContent = (r.success ? '✅ ' : '⚠️ ') + r.message;
+                }, function (xhr) {
+                    form.querySelector('.b-msg').textContent = '❌ ' + errMsg(xhr, 'Zařazení selhalo.');
+                });
+            }
+            form.querySelector('.b-go').addEventListener('click', function () { go(false); });
+            form.querySelector('.b-now').addEventListener('click', function () { go(true); });
+        }
+
+        el('fsLinksBtn').addEventListener('click', loadLinks);
+
         // ── Fronta ───────────────────────────────────────────────
         function itemBadges(i) {
             return (i.quality ? '<span class="fs-badge fs-b-q">' + esc(i.quality) + '</span>' : '')
                 + (i.language ? '<span class="fs-badge">' + esc(i.language) + '</span>' : '')
                 + '<span class="fs-badge">' + fmtBytes(i.sizeBytes) + '</span>'
                 + (i.forceNow ? '<span class="fs-badge fs-b-warn">⚡ přednost</span>' : '')
-                + (i.fromWatcher ? '<span class="fs-badge">👁 hlídač</span>' : '');
+                + (i.fromWatcher ? '<span class="fs-badge">👁 hlídač</span>' : '')
+                + (i.isArchive ? '<span class="fs-badge fs-b-q">📦 archiv' + (i.parts > 1 ? ' · ' + i.parts + ' části' : '') + (i.archiveSeason ? ' · ' + i.archiveSeason + '. řada' : '') + '</span>' : '');
         }
 
         function renderStatus(s) {
@@ -510,7 +632,8 @@
             el('fsStatusDetail').textContent = 'Dnes staženo ' + fmtBytes(s.dailyBytes)
                 + ' · volné místo ' + (s.freeSpaceBytes ? fmtBytes(s.freeSpaceBytes) : '?')
                 + ' · účet: ' + acc
-                + (s.outage ? ' · ⚠️ ' + s.outage : '');
+                + (s.outage ? ' · ⚠️ ' + s.outage : '')
+                + (s.archiveSupport ? ' · archivy: ' + s.archiveSupport : ' · ⚠️ rozbalování archivů nefunguje (chybí SharpCompress)');
             el('fsPauseBtn').querySelector('span').textContent = s.paused ? '▶ Pokračovat' : '⏸ Pozastavit';
             el('fsPauseBtn').setAttribute('data-paused', s.paused ? '1' : '0');
         }
@@ -549,7 +672,8 @@
                 } else if (kind === 'problem') {
                     sub += '<br>⚠️ ' + esc(i.error || '?') + (i.stoppedPercent ? ' (zastaveno na ' + i.stoppedPercent + ' %)' : '');
                 } else if (kind === 'done') {
-                    sub = (i.status === 'Skipped' ? '⏭ ' + esc(i.error || 'přeskočeno') : '✅ ' + fmtLocal(i.completedUtc)) + ' · ' + esc(i.targetPath || i.fileName);
+                    sub = (i.status === 'Skipped' ? '⏭ ' + esc(i.error || 'přeskočeno') : '✅ ' + fmtLocal(i.completedUtc)) + ' · ' + esc(i.targetPath || i.fileName)
+                        + (i.archiveResult ? '<br>📦 ' + esc(i.archiveResult) : '');
                 }
                 html += '<div class="fs-row" data-id="' + i.id + '"><div class="fs-main"><div class="fs-name">' + esc(i.title) + '</div>'
                     + '<div class="fs-sub">' + sub + '</div><div>' + itemBadges(i) + '</div></div>'

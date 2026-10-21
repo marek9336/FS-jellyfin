@@ -100,10 +100,139 @@ public class FsController : ControllerBase
         season = f.Season,
         episode = f.Episode,
         isVideo = f.IsVideo,
+        isArchive = f.IsArchive,
+        archivePart = f.ArchivePart,
+        archiveBase = f.ArchiveBase,
+        packSeason = f.PackSeason,
         isSample = f.IsSample,
         thumbnail = f.Thumbnail,
         uploaded = f.UploadedDate,
     };
+
+    // ── Odkazy z webu Fastshare (archivy a vše, co API hledání nevrací) ──
+    public sealed class LinksRequest
+    {
+        /// <summary>Jeden nebo víc odkazů (každý na řádek, nebo oddělené mezerou).</summary>
+        public string Text { get; set; } = string.Empty;
+    }
+
+    [HttpPost("Links")]
+    public async Task<ActionResult> ResolveLinks([FromBody] LinksRequest r, CancellationToken ct)
+    {
+        var links = System.Text.RegularExpressions.Regex.Matches(r.Text ?? string.Empty, @"https?://\S+")
+            .Select(m => m.Value.TrimEnd(',', ';', ')'))
+            .Distinct()
+            .Take(50)
+            .ToList();
+        if (links.Count == 0)
+        {
+            return BadRequest(new { message = "Vlož odkaz na soubor z webu Fastshare (https://fastshare.cloud/číslo/název)." });
+        }
+
+        var hash = await _state.Client.GetHashAsync(ct).ConfigureAwait(false);
+        var files = new List<object>();
+        var errors = new List<string>();
+        foreach (var link in links)
+        {
+            try
+            {
+                var f = await _state.Client.ResolveLinkAsync(link, ct).ConfigureAwait(false);
+                if (hash != null)
+                {
+                    // Velikost (stránka ji neuvádí) a zároveň kontrola, že odkaz s přihlášením opravdu vrací soubor
+                    f.SizeBytes = await _state.Engine.ProbeSizeAsync(f.DownloadUrl, q => FastshareClient.PrepareDownload(q, hash), ct)
+                        .ConfigureAwait(false) ?? 0;
+                }
+
+                files.Add(ToDto(f));
+            }
+            catch (Exception ex) when (ex is HttpRequestException or FastshareException or TaskCanceledException)
+            {
+                errors.Add(link + " — " + ex.Message);
+            }
+        }
+
+        return Ok(new { files, errors, loggedIn = hash != null });
+    }
+
+    public sealed class ArchiveRequest
+    {
+        public List<ArchivePart> Parts { get; set; } = new();
+
+        public string Title { get; set; } = string.Empty;
+
+        public int? Year { get; set; }
+
+        /// <summary>"series" | "movie".</summary>
+        public string MediaType { get; set; } = "series";
+
+        /// <summary>Řada pro soubory, které ji v názvu nemají.</summary>
+        public int? Season { get; set; }
+
+        public string? Quality { get; set; }
+
+        public string? Language { get; set; }
+
+        public bool ForceNow { get; set; }
+    }
+
+    /// <summary>Zařadí archiv (jedno- i vícedílný): po stažení se rozbalí a videa roztřídí do knihovny.</summary>
+    [HttpPost("QueueArchive")]
+    public ActionResult QueueArchive([FromBody] ArchiveRequest r)
+    {
+        if (r.Parts.Count == 0 || string.IsNullOrWhiteSpace(r.Title))
+        {
+            return BadRequest(new { success = false, message = "Chybí části archivu nebo název." });
+        }
+
+        foreach (var p in r.Parts)
+        {
+            if (!Uri.TryCreate(p.DownloadUrl, UriKind.Absolute, out var u) || u.Scheme != "https"
+                || !u.Host.EndsWith(".fastshare.cloud", StringComparison.OrdinalIgnoreCase) && !u.Host.EndsWith(".fastshare.cz", StringComparison.OrdinalIgnoreCase))
+            {
+                return BadRequest(new { success = false, message = "Odkaz nevede na Fastshare: " + p.FileName });
+            }
+        }
+
+        var parts = r.Parts
+            .Select(p => new { Part = p, Info = Parsed(p.FileName) })
+            .OrderBy(x => x.Info.ArchivePart ?? 1)
+            .Select(x => x.Part)
+            .ToList();
+        var series = r.MediaType != "movie";
+        var item = new QueueItem
+        {
+            Title = r.Title.Trim(),
+            SeriesTitle = series ? r.Title.Trim() : null,
+            Year = r.Year is > 1800 ? r.Year : null,
+            MediaType = series ? MediaKind.Episode : MediaKind.Movie,
+            IsArchive = true,
+            Parts = parts,
+            ArchiveSeason = r.Season is > 0 ? r.Season : null,
+            FileId = parts[0].FileId,
+            FileName = parts[0].FileName,
+            DownloadUrl = parts[0].DownloadUrl,
+            SizeBytes = parts.Sum(p => p.SizeBytes),
+            BytesTotal = parts.Sum(p => p.SizeBytes),
+            SizeText = Dedup.FormatSize(parts.Sum(p => p.SizeBytes)),
+            Quality = string.IsNullOrWhiteSpace(r.Quality) ? null : r.Quality,
+            Language = string.IsNullOrWhiteSpace(r.Language) ? null : r.Language,
+            ForceNow = r.ForceNow,
+        };
+
+        var outcome = _state.Queue.Add(item);
+        _state.Queue.Wake();
+        return Ok(outcome == AddOutcome.Added
+            ? new { success = true, message = $"Archiv zařazen ({parts.Count} {(parts.Count == 1 ? "část" : "části")}, {Dedup.FormatSize(item.SizeBytes)}). Po stažení se rozbalí." }
+            : new { success = false, message = "Tenhle archiv už ve frontě je." });
+    }
+
+    private static FsFile Parsed(string name)
+    {
+        var f = new FsFile { FileName = name };
+        FileNameParser.Fill(f);
+        return f;
+    }
 
     // ── Zařazení ──────────────────────────────────────────────────
     public sealed class QueueRequest
@@ -305,6 +434,10 @@ public class FsController : ControllerBase
             bytesTotal = active?.BytesTotal > 0 ? active.BytesTotal : i.BytesTotal,
             speedBps = active?.SpeedBps ?? 0,
             targetPath = i.TargetPath,
+            isArchive = i.IsArchive,
+            parts = i.Parts?.Count ?? 0,
+            archiveSeason = i.ArchiveSeason,
+            archiveResult = i.ArchiveResult,
             addedUtc = i.AddedUtc,
             completedUtc = i.CompletedUtc,
         };
@@ -336,6 +469,7 @@ public class FsController : ControllerBase
             avgSpeedBps = _state.Queue.AvgSpeedBps,
             account = _state.Client.Account,
             outage = _state.OutageReason,
+            archiveSupport = ArchiveExtractor.Support,
         };
     }
 

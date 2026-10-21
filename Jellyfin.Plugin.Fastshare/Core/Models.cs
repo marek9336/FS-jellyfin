@@ -81,6 +81,18 @@ public class FsFile
     /// <summary>Video soubor (mkv/mp4/avi…) — archivy a obrázky se do knihovny nehodí.</summary>
     public bool IsVideo { get; set; }
 
+    /// <summary>Archiv (zip/rar/7z, i díl vícedílného) — po stažení se rozbalí.</summary>
+    public bool IsArchive { get; set; }
+
+    /// <summary>Číslo dílu vícedílného archivu („.part2.rar" = 2, „.r00" = 2, „.001" = 1), jinak null.</summary>
+    public int? ArchivePart { get; set; }
+
+    /// <summary>Řada celého balíku bez dílu („Teorie velkého třesku 9. série.rar" = 9).</summary>
+    public int? PackSeason { get; set; }
+
+    /// <summary>Společný základ názvu dílů archivu („Pratele.S01.part" pro „Pratele.S01.part1.rar").</summary>
+    public string? ArchiveBase { get; set; }
+
     /// <summary>Přibližný datový tok v bitech/s (velikost / délka), když je délka známá.</summary>
     [JsonIgnore]
     public long? Bitrate => DurationSec is > 0 && SizeBytes > 0 ? SizeBytes * 8 / DurationSec.Value : null;
@@ -180,6 +192,31 @@ public class QueueItem
     /// stahují dál — při souběžném stahování nečeká kvůli jedné chybě celý worker.
     /// </summary>
     public DateTime? RetryAfterUtc { get; set; }
+
+    // ── Archiv (zip/rar/7z) ───────────────────────────────────────
+    /// <summary>Položka je archiv: stáhnout všechny části, rozbalit, videa roztřídit do knihovny.</summary>
+    public bool IsArchive { get; set; }
+
+    /// <summary>Části archivu v pořadí (u jednodílného jedna). Hlavní soubor je i ve FileId/DownloadUrl.</summary>
+    public List<ArchivePart>? Parts { get; set; }
+
+    /// <summary>Řada pro soubory v archivu, které ji v názvu nemají (seriál po řadách: „Přátelé 3. série.rar").</summary>
+    public int? ArchiveSeason { get; set; }
+
+    /// <summary>Výsledek rozbalení pro GUI („24 dílů, 1 přeskočen, 2 nerozpoznané").</summary>
+    public string? ArchiveResult { get; set; }
+}
+
+/// <summary>Jeden soubor archivu (u vícedílného jich je víc, stahují se postupně).</summary>
+public class ArchivePart
+{
+    public string FileId { get; set; } = string.Empty;
+
+    public string FileName { get; set; } = string.Empty;
+
+    public string DownloadUrl { get; set; } = string.Empty;
+
+    public long SizeBytes { get; set; }
 }
 
 /// <summary>

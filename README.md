@@ -18,6 +18,12 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   a roku → zařadí, jakmile se objeví. Kontroluje periodicky a dohledává nové díly.
 - **Automatický výběr** podle priorit: jazyk (CZ dabing > SK > EN, titulky), max. kvalita, **zvlášť max.
   velikost filmu a dílu seriálu**, max. datový tok, kodek, HDR/DV.
+- **Archivy** (celé řady seriálů v `.rar` / `.zip` / `.7z`, i vícedílné `.partN.rar`, `.r00…`, `.7z.001…`):
+  hledání přes API Fastshare vrací jen videa, archivy proto najdeš na webu Fastshare v záložce *Archivy*
+  a odkaz(y) vložíš do pluginu (Hledání → 📎). Plugin stáhne všechny části, rozbalí je a díly roztřídí
+  podle S01E02 / 1x02 v názvech; řadu bez označení vezme z názvu archivu („9. série"). Co nepozná,
+  nechá ve skryté složce `.nerozpoznane` u seriálu. Zaheslované archivy neumí. Rozbaluje knihovnou
+  SharpCompress, kterou má Jellyfin 12 sám — nic dalšího se neinstaluje.
 - Pojmenování podle Jellyfinu: `Filmy/Název (rok)/Název (rok) - [1080p CZ].mkv`,
   `Seriály/Název/Season 01/Název - S01E02 - [1080p CZ].mkv`; duplicity ve stejné kvalitě se nestahují.
 
@@ -41,6 +47,12 @@ dotnet publish Jellyfin.Plugin.Fastshare -c Release -o publish
 Vydání: tag `vX.Y.Z` → GitHub Actions spustí testy, sestaví zip, vytvoří release a doplní `manifest.json`.
 
 `samples/` jsou skutečné odpovědi hledání Fastshare (20. 10. 2026), na kterých se ladí čtečka názvů.
+
+## Co nejde
+
+- **Řazení podle lajků**: Fastshare palce nahoru eviduje a web podle nich řadí, ale API (to samé, co
+  používá oficiální Kodi doplněk) je nevrací a webové hledání je chráněné tokenem z JavaScriptu.
+  Plugin ho obcházet nebude — kdyby Fastshare hodnocení přidal do API, doplní se.
 
 ## Plán
 

@@ -516,8 +516,10 @@ public sealed class DownloadQueue
             // Tentýž obsah ve stejné kvalitě už čeká / se stahuje → nezařazovat znovu.
             var media = Dedup.MediaKey(item);
             var quality = Dedup.NormQuality(item.Quality);
-            if (_state.Items.Any(i =>
-                (i.Status is QueueItemStatus.Queued or QueueItemStatus.Downloading)
+            // (archiv obsahuje celou řadu, žádný konkrétní díl — tahle kontrola pro něj neplatí)
+            if (!item.IsArchive && _state.Items.Any(i =>
+                !i.IsArchive
+                && (i.Status is QueueItemStatus.Queued or QueueItemStatus.Downloading)
                 && Dedup.MediaKey(i) == media
                 && Dedup.NormQuality(i.Quality) == quality))
             {
