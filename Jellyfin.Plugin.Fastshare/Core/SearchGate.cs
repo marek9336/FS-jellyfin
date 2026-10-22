@@ -64,14 +64,23 @@ public sealed class SearchGate
     /// <summary>Kdy nejdřív smí jít další dotaz.</summary>
     public DateTime NextUtc => _nextUtc;
 
+    /// <summary>Nejvýš tolik automatických dotazů za hodinu, ať nastavení nikdy nepustí nálet na Fastshare.</summary>
+    public const int MaxPerHour = 60;
+
+    /// <summary>
+    /// Rozestup dotazů. 0 (nebo prázdné pole v nastavení) = automatické hledání VYPNUTO — dřív to znamenalo
+    /// „bez stropu" a 22. 10. ráno to pustilo ~45 dotazů za 5 minut.
+    /// </summary>
     public TimeSpan Interval
     {
         get
         {
             var n = _perHour();
-            return n <= 0 ? TimeSpan.Zero : TimeSpan.FromSeconds(3600.0 / n);
+            return n <= 0 ? TimeSpan.MaxValue : TimeSpan.FromSeconds(3600.0 / Math.Min(n, MaxPerHour));
         }
     }
+
+    public bool Paused => _perHour() <= 0;
 
     /// <summary>Počká na svůj slot. `onWait` dostane čas, kdy dotaz půjde (pro stavovou hlášku).</summary>
     public async Task WaitAsync(CancellationToken ct, Action<DateTime>? onWait = null)
@@ -81,6 +90,14 @@ public sealed class SearchGate
         {
             while (true)
             {
+                if (Paused)
+                {
+                    // vypnuto v nastavení — čekat, dokud se strop nezvýší
+                    onWait?.Invoke(DateTime.UtcNow.AddMinutes(10));
+                    await Task.Delay(TimeSpan.FromMinutes(1), ct).ConfigureAwait(false);
+                    continue;
+                }
+
                 // nejdřív smí jít po rozestupu, a jen v okně hledání (začátek okna + pár minut náhodně)
                 var now = DateTime.UtcNow;
                 var at = _nextUtc > now ? _nextUtc : now;

@@ -106,7 +106,7 @@ public class PluginConfiguration : BasePluginConfiguration
     // ── Navržené (kontrola knihovny) ──────────────────────────────
     /// <summary>
     /// Kolik automatických hledání na Fastshare za hodinu (kontrola knihovny a hlídač dohromady),
-    /// rovnoměrně rozložených. 0 = bez stropu (nedoporučeno). Ruční hledání v GUI se nepočítá.
+    /// rozložených s náhodou. 0 = automatické hledání vypnuto, víc než 60 se nepovolí. Ruční hledání v GUI se nepočítá.
     /// </summary>
     public int AutoSearchesPerHour { get; set; } = 20;
 

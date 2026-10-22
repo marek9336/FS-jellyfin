@@ -109,15 +109,15 @@ public sealed class LibraryTests : IDisposable
     [Fact]
     public async Task SearchGateSpacesQueries()
     {
-        var gate = new SearchGate(() => 7200); // 2 za sekundu → odstup 0,5 s
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        await gate.WaitAsync(CancellationToken.None);
-        await gate.WaitAsync(CancellationToken.None);
-        await gate.WaitAsync(CancellationToken.None);
-        // dva rozestupy po 0,5 s ± 25 % (náhoda, ať dotazy nechodí jako hodinky)
-        Assert.True(sw.Elapsed >= TimeSpan.FromSeconds(0.7), $"jen {sw.Elapsed}");
         Assert.Equal(TimeSpan.FromSeconds(180), new SearchGate(() => 20).Interval);
-        Assert.Equal(TimeSpan.Zero, new SearchGate(() => 0).Interval);
+        // víc než 60/h se nepovolí (nálet ~45 dotazů za 5 min 22. 10.)
+        Assert.Equal(TimeSpan.FromSeconds(60), new SearchGate(() => 7200).Interval);
+
+        // 0 / prázdné pole = vypnuto, ne „bez stropu"
+        var off = new SearchGate(() => 0);
+        Assert.True(off.Paused);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => off.WaitAsync(cts.Token));
     }
 
     [Fact]

@@ -32,11 +32,11 @@ public sealed class SearchGateTests
     [Fact]
     public async Task WaitsForWindowAndSpacesQueries()
     {
-        // okno celý den → první dotaz hned, další s rozestupem 3600/n ± 25 %
-        var gate = new SearchGate(() => 3600, () => "5-5");
+        // okno celý den → první dotaz hned, další s rozestupem 3600/n ± 25 % (n nejvýš 60)
+        var gate = new SearchGate(() => 60, () => "5-5");
         await gate.WaitAsync(CancellationToken.None);
         var gap = gate.NextUtc - DateTime.UtcNow;
-        Assert.InRange(gap.TotalSeconds, 0.5, 1.3);
+        Assert.InRange(gap.TotalSeconds, 44, 76);
 
         // mimo okno → čeká (zrušení během čekání)
         var closed = new SearchGate(() => 3600, () => $"{(DateTime.Now.Hour + 2) % 24}-{(DateTime.Now.Hour + 3) % 24}");

@@ -928,6 +928,12 @@ public sealed class LibraryAdvisor : BackgroundService
         var rest = _jobs.Skip(Math.Max(0, Status.Done - 1)).Where(NeedsSearch).ToList();
         var left = rest.Count(j => j.NetKey == null)
             + (2 * rest.Where(j => j.NetKey != null && !_seriesFetched.Contains(j.NetKey)).Select(j => j.NetKey).Distinct().Count());
+        if (_state.SearchGate.Paused)
+        {
+            Status.Phase = $"{_searchPhase} — automatické hledání vypnuto (strop 0 v Nastavení)";
+            return;
+        }
+
         var hours = left * _state.SearchGate.Interval.TotalHours / _state.SearchGate.WindowFraction;
         var win = _state.SearchGate.WindowText;
         Status.Phase = $"{_searchPhase} — strop {Plugin.Instance?.Configuration.AutoSearchesPerHour}/h{(win != null ? " jen " + win : string.Empty)}, další hledání v "

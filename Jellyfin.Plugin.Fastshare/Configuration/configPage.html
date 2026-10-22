@@ -249,7 +249,7 @@
                         <div class="selectContainer"><select is="emby-select" id="cfgSuggestTargetQuality" label="Navrhovat lepší verzi do">
                             <option value="720p">720p</option><option value="1080p">1080p (Full HD)</option></select></div>
                         <div class="inputContainer"><input is="emby-input" type="number" id="cfgSuggestRecheckDays" label="Znovu hledat po (dní)" min="1" /></div>
-                        <div class="inputContainer"><input is="emby-input" type="number" id="cfgAutoSearchesPerHour" label="Automatických hledání za hodinu" min="0" /></div>
+                        <div class="inputContainer"><input is="emby-input" type="number" id="cfgAutoSearchesPerHour" label="Automatických hledání za hodinu (0 = vypnuto, max 60)" min="0" max="60" /></div>
                         <div class="inputContainer"><input is="emby-input" type="text" id="cfgSearchHours" label="Hledat jen v hodinách (např. 1-7 nebo 1-7,13-15)" /></div>
                     </div>
                     <div class="fieldDescription">Strop platí pro kontrolu knihovny i hlídač dohromady (ruční hledání ne). Dotazy jsou rozložené
