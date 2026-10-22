@@ -1200,8 +1200,26 @@ public class FsController : ControllerBase
             return Ok(new { success = true, message = "Chybějící díly se u seriálu už nehledají." });
         }
 
-        Advisor.Restart();
-        return Ok(new { success = true, message = "Hledám chybějící díly — kontrola se spustila znovu (díly jdou po stropu hledání za hodinu)." });
+        Advisor.Prioritize(seriesId);
+        return Ok(new { success = true, message = "Chybějící díly se hledají — seriál jde na začátek fronty. " + NextSearchNote() });
+    }
+
+    /// <summary>🔎 Seriál hned na řadu: lepší verze dílů (a chybějící, je-li zapnuto) i když se nedávno hledalo.</summary>
+    [HttpPost("Suggestions/Series/{seriesId}/SearchNow")]
+    public ActionResult SearchSeriesNow([FromRoute] string seriesId)
+    {
+        Advisor.Prioritize(seriesId);
+        return Ok(new { success = true, message = "Seriál jde na začátek fronty hledání. " + NextSearchNote() });
+    }
+
+    /// <summary>Kdy půjde další dotaz (strop hledání za hodinu) — ať je jasné, proč se hned nic neděje.</summary>
+    private string NextSearchNote()
+    {
+        var next = _state.SearchGate.NextUtc;
+        var perHour = Plugin.Instance?.Configuration.AutoSearchesPerHour ?? 20;
+        return next > DateTime.UtcNow
+            ? $"Další dotaz na Fastshare v {next.ToLocalTime():H:mm} (strop {perHour}/h), seriál potřebuje 1–2 dotazy na název. Pak klikni na „Obnovit seznam“."
+            : "Za chvilku klikni na „Obnovit seznam“.";
     }
 
     public sealed class SeriesTargetRequest

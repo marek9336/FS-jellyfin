@@ -67,6 +67,18 @@ public sealed class LibraryAdvisor : BackgroundService
 
     private volatile bool _restartRequested;
 
+    // Seriály „🔎 Hledat teď": jejich díly jdou v příští kontrole na začátek fronty a hledají se i nedávno
+    // prohledané. Po zpracování ze seznamu zmizí.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _prioritySeries = new(StringComparer.Ordinal);
+
+    public void Prioritize(string seriesId)
+    {
+        _prioritySeries[seriesId] = 0;
+        Restart();
+    }
+
+    private bool IsPriority(SearchJob j) => j.NetKey != null && _prioritySeries.ContainsKey(j.NetKey);
+
     /// <summary>
     /// Spustit kontrolu znovu hned (změna nastavení seriálu). Běžící se zastaví — nic se neztratí:
     /// návrhy se ukládají průběžně a prohledané položky se přeskočí.
@@ -146,7 +158,11 @@ public sealed class LibraryAdvisor : BackgroundService
 
             try
             {
-                manual = await _trigger.WaitAsync(TimeSpan.FromHours(6), ct).ConfigureAwait(false);
+                // nedokončená kontrola (výpadek Fastshare) → zkusit po pauze, jinak co 6 h ověřit termín
+                var wait = _state.Suggestions.RunPending
+                    ? TimeSpan.FromMinutes(Math.Max(5, _state.OutageRemaining().TotalMinutes + 1))
+                    : TimeSpan.FromHours(6);
+                manual = await _trigger.WaitAsync(wait, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -343,6 +359,16 @@ public sealed class LibraryAdvisor : BackgroundService
             }
         }
 
+        // „Hledat teď" → díly těch seriálů na začátek
+        var prioritized = jobs.Where(IsPriority).Select(j => j.NetKey!).ToHashSet(StringComparer.Ordinal);
+        var askedAtStart = _prioritySeries.Keys.ToList(); // i seriály, u kterých nebylo co hledat
+        if (askedAtStart.Count > 0)
+        {
+            _logger.LogInformation("Fastshare: přednostně {Series} — {Jobs} položek", string.Join(", ", askedAtStart), jobs.Count(IsPriority));
+        }
+
+        jobs = jobs.Where(IsPriority).Concat(jobs.Where(j => !IsPriority(j))).ToList();
+
         Status.Total = jobs.Count;
         Status.Done = 0;
         _jobs = jobs;
@@ -356,8 +382,19 @@ public sealed class LibraryAdvisor : BackgroundService
         {
             ct.ThrowIfCancellationRequested();
             Status.Done++;
+            if (prioritized.Count > 0 && !IsPriority(job))
+            {
+                // přednostní seriály hotové
+                foreach (var p in prioritized)
+                {
+                    _prioritySeries.TryRemove(p, out _);
+                }
+
+                prioritized.Clear();
+            }
+
             var checkedAt = _state.Suggestions.UpgradeChecked(job.Key);
-            if (!force && checkedAt != null && DateTime.UtcNow - checkedAt.Value < recheck)
+            if (!force && !IsPriority(job) && checkedAt != null && DateTime.UtcNow - checkedAt.Value < recheck)
             {
                 job.KeepOld?.Invoke();
                 continue;
@@ -387,6 +424,11 @@ public sealed class LibraryAdvisor : BackgroundService
             job.Apply(candidate);
         }
 
+        foreach (var p in askedAtStart)
+        {
+            _prioritySeries.TryRemove(p, out _);
+        }
+
         // Neúplné hledání (výpadek) nesmí smazat dřívější návrhy lepších verzí, na které se nedostalo
         _state.Suggestions.Merge(found, complete
             ? new[] { "identify", "duplicate", "episode", "missing", "misplaced", "upgrade" }
@@ -400,6 +442,13 @@ public sealed class LibraryAdvisor : BackgroundService
         Status.LastResult = summary;
         Status.LastRunUtc = DateTime.UtcNow;
         _state.Suggestions.SetLastRun(summary);
+        if (!complete)
+        {
+            // výpadek Fastshare: na zbytek nezapomenout, pokračovat po pauze (ne až za týden)
+            _state.Suggestions.RunPending = true;
+            var at = DateTime.Now + _state.OutageRemaining();
+            Status.LastResult = summary + $" — přerušeno ({_state.OutageReason ?? "Fastshare mimo"}), pokračuje v {at:H:mm}";
+        }
         _logger.LogInformation("Fastshare: kontrola knihovny hotova — {Summary}", summary);
     }
 
@@ -846,7 +895,7 @@ public sealed class LibraryAdvisor : BackgroundService
     private bool NeedsSearch(SearchJob j)
     {
         var at = _state.Suggestions.UpgradeChecked(j.Key);
-        return _force || at == null || DateTime.UtcNow - at.Value >= _recheck;
+        return _force || IsPriority(j) || at == null || DateTime.UtcNow - at.Value >= _recheck;
     }
 
     /// <summary>Stavová hláška při čekání na strop hledání: kdy další dotaz a kolik zbývá.</summary>

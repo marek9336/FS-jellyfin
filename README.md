@@ -51,7 +51,11 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
     soubor se přesouvá jen jednou — opakované kliknutí nic nezdvojí,
   - 🚚 díly seriálů ve Filmech → přesun do složky řady seriálu; stejný seriál ve dvou složkách → sloučit;
     smazání celého seriálu,
-  - řazení: nalezená lepší verze první, nejvíc ušetří místa, nejvíc kopií, od nejhorší / nejlepší kvality,
+  - 🔎 *Hledat teď* u seriálu (a zapnutí „Dohledat chybějící") ho pošle na začátek fronty hledání; chybějící díl,
+    který v cílové kvalitě není, se nabídne v nejlepší nižší — po stažení se dál hledá lepší verze,
+  - po výpadku Fastshare (HTTP 5xx, 429) kontrola po hodinové pauze sama pokračuje,
+  - řazení: nalezená lepší verze první, nejvíc ušetří místa (u lepší verze: dnešní soubory − nový soubor, takže
+    větší nový soubor jde dolů), nejvíc kopií, od nejhorší / nejlepší kvality,
     velikost, název.
   Kontrola běží na pozadí (jednou týdně, nebo tlačítkem), automatická hledání mají strop (výchozí 20/h);
   díly seriálů se hledají po seriálech (jeden dotaz „Mentalista" = až 200 souborů, nejvýš 5 stránek) — 150 chybějících

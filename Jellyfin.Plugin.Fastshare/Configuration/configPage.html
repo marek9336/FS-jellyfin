@@ -883,6 +883,19 @@
         /// Kolik místa uvolní smazání všech verzí kromě nejlepší
         function savings(x) { return x.Versions.slice(1).reduce(function (n, v) { return n + (v.SizeBytes || 0); }, 0); }
 
+        /// Kolik místa se skutečně uvolní: s nalezenou lepší verzí (a „nahradit") = všechny dnešní soubory − nový soubor
+        /// (záporné = nový zabere víc), bez ní = smazání horších verzí
+        function gain(x) {
+            if (!x.Candidate || !x.Candidate.SizeBytes) return savings(x);
+            return x.Versions.reduce(function (n, v) { return n + (v.SizeBytes || 0); }, 0) - x.Candidate.SizeBytes;
+        }
+
+        function gainLine(x) {
+            if (!x.Candidate || !x.Candidate.SizeBytes) return '';
+            var g = gain(x);
+            return '<div class="fs-sub">💾 s „nahradit“ ' + (g >= 0 ? 'ušetří <strong>' + fmtBytes(g) + '</strong>' : 'zabere o <strong>' + fmtBytes(-g) + '</strong> víc') + '</div>';
+        }
+
         function verRow(x, v, i, selectable) {
             var res = v.Width ? v.Width + '×' + v.Height : 'rozlišení ?';
             var check = selectable
@@ -955,7 +968,7 @@
                 if (mode === 'worst') return (bestQ(a) - bestQ(b)) || a.Title.localeCompare(b.Title, 'cs');
                 if (mode === 'best') return (bestQ(b) - bestQ(a)) || a.Title.localeCompare(b.Title, 'cs');
                 if (mode === 'size') return size(b) - size(a);
-                if (mode === 'savings') return savings(b) - savings(a) || (b.Versions.length - a.Versions.length);
+                if (mode === 'savings') return gain(b) - gain(a) || (b.Versions.length - a.Versions.length);
                 if (mode === 'copies') return (b.Versions.length - a.Versions.length) || (savings(b) - savings(a));
                 return a.Title.localeCompare(b.Title, 'cs') || ((a.Season || 0) - (b.Season || 0)) || ((a.Episode || 0) - (b.Episode || 0));
             });
@@ -1016,7 +1029,7 @@
                 body = x.Versions.map(function (v, i) { return verRow(x, v, i, multi); }).join('')
                     + (multi ? '<div class="fs-sub">💾 smazáním horších verzí se uvolní <strong>' + fmtBytes(savings(x)) + '</strong></div>' : '');
                 var tgt = x.TargetQuality || (cfgCache && cfgCache.SuggestTargetQuality) || '1080p';
-                if (x.Candidate || (x.Versions[0] && qLevel(x.Versions[0].Quality) < qLevel(tgt))) body += candLine(x.Candidate);
+                if (x.Candidate || (x.Versions[0] && qLevel(x.Versions[0].Quality) < qLevel(tgt))) body += candLine(x.Candidate) + gainLine(x);
                 if (multi) actions += '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="deleteVersions" title="Smaže zaškrtnuté verze, ostatní zůstanou">🗑 Smazat označené</button>';
                 if (x.Candidate) {
                     actions += '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;" title="Po úspěšném stažení smazat všechny dosavadní verze"><input type="checkbox" class="s-replace" checked> nahradit</label>'
@@ -1052,11 +1065,12 @@
                 + ' · ' + (eps.length ? '<strong>' + eps.length + ' k vyřízení</strong>' : 'kvalita jednotná') + (withC ? ', ' + withC + ' s nalezenou lepší verzí' : '')
                 + (sum.MultiVersion ? ', ' + sum.MultiVersion + ' ve víc verzích' : '')
                 + (sum.SavingsBytes ? ', 💾 ušetří ' + fmtBytes(sum.SavingsBytes) : '')
-                + ' · ' + missInfo + '</summary>'
+                + ' · ' + missInfo + (openSeries[sum.SeriesId] ? '' : ' <span style="opacity:.55; font-size:.85em;">— klepni pro akce</span>') + '</summary>'
                 + '<div style="display:flex; gap:.5em; flex-wrap:wrap; align-items:center; margin:.6em 0;">'
                 + '<select class="s-target" style="background:#111; color:inherit; border:1px solid #444; border-radius:4px; padding:.3em;" title="Na jakou kvalitu díly sjednotit">' + opts + '</select>'
                 + (withC ? '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;"><input type="checkbox" class="s-sreplace" checked> nahradit</label>'
                     + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="downloadAll">⬇️ Stáhnout všech ' + withC + '</button>' : '')
+                + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="searchNow" title="Hledat lepší verze dílů' + (sum.FindMissing ? ' a chybějící díly' : '') + ' hned — seriál jde na začátek fronty">🔎 Hledat teď</button>'
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="rejectAll" title="Kvalita seriálu stačí — nenavrhovat jeho díly">✋ Celý seriál nechat</button>'
                 + (guessed.length ? '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="fixGuessed" title="Neočíslované díly s jistým odhadem přesunout a přejmenovat na „Seriál - SxxEyy“ (nejisté zůstanou)">🔧 Zařadit odhadnuté (' + guessed.length + ')</button>' : '')
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="deleteSeries" title="Smazat všechny díly seriálu z disku">🗑 Smazat celý seriál</button>'
@@ -1177,6 +1191,8 @@
                 var sum = (sugData.series || []).filter(function (x) { return x.SeriesId === sid; })[0] || {};
                 if (!confirm('Smazat CELÝ seriál „' + sum.Name + '“ (' + sum.Episodes + ' dílů) z disku?\n\n' + (sum.Folders || []).join('\n') + '\n\nNejde vrátit.')) return;
                 api('POST', 'Suggestions/Series/' + sid + '/Delete').then(function (r) { Dashboard.alert(r.message); loadSuggest(false); });
+            } else if (act === 'searchNow') {
+                api('POST', 'Suggestions/Series/' + sid + '/SearchNow').then(function (r) { Dashboard.alert(r.message); });
             } else if (act === 'missingOn' || act === 'missingOff') {
                 api('POST', 'Suggestions/Series/' + sid + '/FindMissing', { Enable: act === 'missingOn' }).then(function (r) { Dashboard.alert(r.message); loadSuggest(false); });
             } else if (act === 'downloadMissing') {
