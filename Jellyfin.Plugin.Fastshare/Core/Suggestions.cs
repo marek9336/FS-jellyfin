@@ -151,6 +151,9 @@ public class SeriesSummary
 
     public int Episodes { get; set; }
 
+    /// <summary>Stav podle TMDb (metadata Jellyfinu): „Ended" (ukončený), „Continuing" (běží), null = neznámý.</summary>
+    public string? SeriesStatus { get; set; }
+
     /// <summary>Kvalita → počet dílů (podle nejlepší verze dílu).</summary>
     public Dictionary<string, int> Qualities { get; set; } = new();
 

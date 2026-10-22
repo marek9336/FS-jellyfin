@@ -55,6 +55,9 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
     který v cílové kvalitě není, se nabídne v nejlepší nižší — po stažení se dál hledá lepší verze,
   - 🎬 filmy ve složkách seriálů (neočíslovaný „díl" 70+ min, název nesedí k seriálu) → „Přesunout do Filmů"
     (`Filmy/Název (rok)/`); u každého dílu ruční „🎬 Je to film",
+  - ✅ hotové seriály (podle TMDb ukončené, žádný díl nechybí, nic k vyřízení) dole ve sbalené sekci, u seriálů štítek
+    🏁 ukončený / 📡 běží,
+  - každé tlačítko hned zamkne a ukáže ⏳, výsledek (i „už běží" nebo chyba) vyskočí dole jako hláška,
   - automatická hledání jen v okně hodin (Nastavení, výchozí 1–7 h) s náhodným rozestupem ±25 %,
   - po výpadku Fastshare (HTTP 5xx, 429) kontrola po hodinové pauze sama pokračuje,
   - řazení: nalezená lepší verze první, nejvíc ušetří místa (u lepší verze: dnešní soubory − nový soubor, takže

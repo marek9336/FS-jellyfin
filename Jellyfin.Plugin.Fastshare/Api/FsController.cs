@@ -607,8 +607,23 @@ public class FsController : ControllerBase
     }
 
     [HttpPost("Suggestions/Scan")]
-    public ActionResult Scan([FromBody] ScanRequest? r) =>
-        Ok(new { started = Advisor.Start(r?.Force == true), message = Advisor.Status.Running ? "Kontrola už běží." : "Kontrola spuštěna." });
+    public ActionResult Scan([FromBody] ScanRequest? r)
+    {
+        var force = r?.Force == true;
+        var cfg = Plugin.Instance?.Configuration;
+        var win = _state.SearchGate.WindowText;
+        var pace = _state.SearchGate.Paused
+            ? "automatické hledání je vypnuté (strop 0)"
+            : $"hledání na Fastshare jde po stropu {cfg?.AutoSearchesPerHour}/h{(win != null ? " v okně " + win : string.Empty)}";
+        if (Advisor.Start(force))
+        {
+            return Ok(new { success = true, started = true, message = $"Kontrola spuštěna — nejdřív projde knihovnu (pár minut), pak {pace}." });
+        }
+
+        // už běží (často jen čeká na okno / strop hledání) → znovu načíst knihovnu, prohledané se nehledá znovu
+        Advisor.Restart(force);
+        return Ok(new { success = true, started = true, message = $"Kontrola už běžela — načítám knihovnu znovu (nové a smazané soubory), hledání pokračuje, kde skončilo; {pace}." });
+    }
 
     [HttpPost("Suggestions/Stop")]
     public ActionResult StopScan()

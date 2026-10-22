@@ -66,6 +66,7 @@ public sealed class LibraryAdvisor : BackgroundService
     public void Stop() => _runCts?.Cancel();
 
     private volatile bool _restartRequested;
+    private volatile bool _restartForce;
 
     // Seriály „🔎 Hledat teď": jejich díly jdou v příští kontrole na začátek fronty a hledají se i nedávno
     // prohledané. Po zpracování ze seznamu zmizí.
@@ -83,14 +84,15 @@ public sealed class LibraryAdvisor : BackgroundService
     /// Spustit kontrolu znovu hned (změna nastavení seriálu). Běžící se zastaví — nic se neztratí:
     /// návrhy se ukládají průběžně a prohledané položky se přeskočí.
     /// </summary>
-    public void Restart()
+    public void Restart(bool force = false)
     {
         if (!Status.Running)
         {
-            Start(false);
+            Start(force);
             return;
         }
 
+        _restartForce = force; // _forceNext by vynuloval finally přerušené kontroly
         _restartRequested = true;
         Stop();
     }
@@ -152,6 +154,8 @@ public sealed class LibraryAdvisor : BackgroundService
             if (_restartRequested)
             {
                 _restartRequested = false;
+                _forceNext = _restartForce;
+                _restartForce = false;
                 manual = true;
                 continue;
             }
@@ -574,6 +578,7 @@ public sealed class LibraryAdvisor : BackgroundService
 
             BaseItem? seriesItem = _library.GetItemById(series.Key);
             summary.TmdbId = seriesItem?.GetProviderId(MetadataProvider.Tmdb);
+            summary.SeriesStatus = (seriesItem as MediaBrowser.Controller.Entities.TV.Series)?.Status?.ToString();
             summary.OriginalTitle = seriesItem?.OriginalTitle;
             _seriesEps[seriesId] = eps.Select(x => (x.Ep, x.Versions)).ToList();
             var titles = new[] { name, seriesItem?.OriginalTitle }.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();

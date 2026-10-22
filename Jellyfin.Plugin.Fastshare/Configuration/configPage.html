@@ -7,6 +7,16 @@
 <div id="FsConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
      data-require="emby-input,emby-button,emby-select,emby-checkbox">
     <style>
+        #FsConfigPage .fs-busy { opacity: .6; cursor: progress !important; }
+        #FsConfigPage .fs-busy::after { content: ' ⏳'; }
+        #fsToasts { position: fixed; left: 50%; bottom: 1.2em; transform: translateX(-50%); z-index: 9999; display: flex; flex-direction: column;
+            gap: .4em; align-items: center; width: min(92vw, 640px); pointer-events: none; }
+        .fs-toast { background: #263238; color: #fff; border-left: 4px solid #90caf9; padding: .6em 1em; border-radius: 6px; box-shadow: 0 2px 10px #0008;
+            font-size: .95em; transition: opacity .5s; max-width: 100%; }
+        .fs-toast-ok { border-left-color: #66bb6a; }
+        .fs-toast-warn { border-left-color: #ffb74d; }
+        .fs-toast-err { border-left-color: #ef5350; }
+        .fs-toast-out { opacity: 0; }
         #FsConfigPage .fs-card { background:#202020; padding:1em; border-radius:4px; margin-bottom:1em; }
         #FsConfigPage .fs-row { background:#1c1c1c; border-radius:4px; padding:.6em .8em; margin-bottom:.4em; display:flex; gap:.8em; align-items:center; flex-wrap:wrap; }
         #FsConfigPage .fs-row:hover { background:#262626; }
@@ -281,14 +291,54 @@
         var QLEVEL = { 'SD': 1, '720p': 2, '1080p': 3, '4K': 4, '8K': 5 };
 
         // ── Pomocné ──────────────────────────────────────────────
+        // ── Odezva tlačítek ─────────────────────────────────────
+        // Každé tlačítko, které volá server: hned se zamkne a ukáže ⏳, po odpovědi se odemkne a dole vyskočí
+        // hláška s výsledkem (i „už běží" / chyba) — ať není potřeba klikat znovu.
+        var lastBtn = null, lastBtnAt = 0;
+        page.addEventListener('click', function (e) {
+            var b = e.target.closest && e.target.closest('button');
+            if (b) { lastBtn = b; lastBtnAt = Date.now(); }
+        }, true);
+
+        function busy(btn, on) {
+            if (!btn) return;
+            btn.disabled = on;
+            btn.classList.toggle('fs-busy', on);
+        }
+
+        function toast(text, kind) {
+            var box = page.querySelector('#fsToasts');
+            if (!box) { box = document.createElement('div'); box.id = 'fsToasts'; page.appendChild(box); }
+            var t = document.createElement('div');
+            t.className = 'fs-toast' + (kind ? ' fs-toast-' + kind : '');
+            t.textContent = text;
+            box.appendChild(t);
+            setTimeout(function () { t.classList.add('fs-toast-out'); }, kind === 'err' ? 7000 : 4500);
+            setTimeout(function () { t.remove(); }, kind === 'err' ? 7600 : 5100);
+        }
+
         function api(method, route, body) {
-            return ApiClient.ajax({
+            var btn = method !== 'GET' && lastBtn && Date.now() - lastBtnAt < 3000 ? lastBtn : null;
+            lastBtn = null;
+            busy(btn, true);
+            var p = ApiClient.ajax({
                 type: method,
                 url: ApiClient.getUrl('Plugins/Fastshare/' + route),
                 data: body ? JSON.stringify(body) : undefined,
                 contentType: 'application/json',
                 dataType: 'json'
             });
+            if (method === 'GET') return p;
+            if (btn) toast('⏳ ' + ((btn.textContent || '').replace(/\s+/g, ' ').trim() || 'Pracuji') + '…');
+            p.then(function (r) {
+                busy(btn, false);
+                var m = r && r.message;
+                toast(m ? ((r.success === false ? '⚠️ ' : (/^[⏳✅⚠️❌]/.test(m) ? '' : '✅ ')) + m) : '✅ Hotovo', r && r.success === false ? 'warn' : 'ok');
+            }, function (xhr) {
+                busy(btn, false);
+                toast('❌ ' + errMsg(xhr, 'Nepovedlo se — server neodpověděl.'), 'err');
+            });
+            return p;
         }
 
         function el(id) { return page.querySelector('#' + id); }
@@ -945,8 +995,6 @@
             el('fsSugBarWrap').classList.toggle('hide', !st.running || !st.total);
             if (st.total) el('fsSugBar').style.width = Math.floor(st.done * 100 / st.total) + '%';
             el('fsSugStop').classList.toggle('hide', !st.running);
-            el('fsSugScan').disabled = st.running;
-            el('fsSugScanAll').disabled = st.running;
             var counts = { upgrade: 0, duplicate: 0, series: 0, misplaced: 0, identify: 0, decided: 0 };
             sugData.items.forEach(function (x) {
                 if (x.Status !== 'new') counts.decided++;
@@ -1060,6 +1108,30 @@
                 + '<div style="display:flex; gap:.3em; flex-wrap:wrap; align-items:center;">' + actions + '</div></div>';
         }
 
+        function statusBadge(sum) {
+            return sum.SeriesStatus === 'Ended' ? '<span class="fs-badge" title="Podle TMDb už nevychází">🏁 ukončený</span>'
+                : sum.SeriesStatus === 'Continuing' ? '<span class="fs-badge" title="Podle TMDb pořád vychází">📡 běží</span>' : '';
+        }
+
+        /// Seriály bez čehokoli k vyřízení: ukončené a kompletní = hotové; běžící zatím kompletní zvlášť
+        function doneSeriesHtml(byS) {
+            var rest = (sugData.series || []).filter(function (s) { return !byS[s.SeriesId] && s.Missing === 0; });
+            var ended = rest.filter(function (s) { return s.SeriesStatus === 'Ended'; });
+            var other = rest.filter(function (s) { return s.SeriesStatus !== 'Ended'; });
+            if (!rest.length) return '';
+            function line(s) {
+                var qs = Object.keys(s.Qualities || {}).sort(function (a, b) { return qLevel(b) - qLevel(a); })
+                    .map(function (q) { return '<span class="fs-badge">' + esc(q) + ' ' + s.Qualities[q] + '×</span>'; }).join('');
+                return '<div class="fs-sub" style="opacity:1;">📺 ' + esc(s.Name) + ' ' + statusBadge(s) + ' · ' + s.Episodes + ' dílů ' + qs + '</div>';
+            }
+            function sorted(l) { return l.slice().sort(function (a, b) { return a.Name.localeCompare(b.Name, 'cs'); }); }
+            return '<details class="fs-card" style="margin-top:1.2em; padding:.6em .8em; opacity:.85;"><summary style="cursor:pointer;"><strong>✅ Hotové seriály ('
+                + ended.length + ')</strong> — ukončené, žádný díl nechybí, nic k vyřízení' + (other.length ? ' · 📡 běžící, zatím kompletní (' + other.length + ')' : '') + '</summary>'
+                + sorted(ended).map(line).join('')
+                + (other.length ? '<div style="margin:.8em 0 .3em; font-weight:600;">📡 Běží nebo stav neznámý — zatím máš všechno</div>' + sorted(other).map(line).join('') : '')
+                + '</details>';
+        }
+
         function seriesHtml(sum, eps) {
             var qs = Object.keys(sum.Qualities || {}).sort(function (a, b) { return qLevel(b) - qLevel(a); })
                 .map(function (q) { return '<span class="fs-badge' + (q === sum.Target ? ' fs-b-q' : '') + '">' + esc(q) + ' ' + sum.Qualities[q] + '×</span>'; }).join('');
@@ -1079,7 +1151,7 @@
                     + (q ? 'sjednotit na ' + q : 'převažující (' + (sum.TargetIsManual ? '?' : sum.Target) + ')') + '</option>';
             }).join('');
             return '<details class="fs-card fs-series" data-sid="' + esc(sum.SeriesId) + '"' + (openSeries[sum.SeriesId] ? ' open' : '') + ' style="padding:.6em .8em;">'
-                + '<summary style="cursor:pointer;"><strong>📺 ' + esc(sum.Name) + '</strong> · ' + sum.Episodes + ' dílů ' + qs
+                + '<summary style="cursor:pointer;"><strong>📺 ' + esc(sum.Name) + '</strong> ' + statusBadge(sum) + ' · ' + sum.Episodes + ' dílů ' + qs
                 + ' · ' + (eps.length ? '<strong>' + eps.length + ' k vyřízení</strong>' : 'kvalita jednotná') + (withC ? ', ' + withC + ' s nalezenou lepší verzí' : '')
                 + (sum.MultiVersion ? ', ' + sum.MultiVersion + ' ve víc verzích' : '')
                 + (sum.SavingsBytes ? ', 💾 ušetří ' + fmtBytes(sum.SavingsBytes) : '')
@@ -1145,6 +1217,7 @@
                     html += seriesHtml(sum, eps);
                 });
                 if (!html) html = '<div class="fs-msg" style="opacity:.6;">Žádný seriál k vyřízení — díly mají jednotnou kvalitu.</div>';
+                if (!onlyC) html += doneSeriesHtml(byS);
             } else {
                 var list = sugData.items.filter(function (x) {
                     if (sugFilter === 'decided') return x.Status !== 'new';
@@ -1183,7 +1256,7 @@
                 });
                 d.querySelector('.s-target').addEventListener('change', function (e) {
                     api('POST', 'Suggestions/Series/' + sid + '/Target', { Quality: e.target.value }).then(function (r) {
-                        Dashboard.alert(r.message); loadSuggest(false);
+                        loadSuggest(false);
                     });
                 });
             });
@@ -1192,7 +1265,7 @@
         function seriesAction(d, sid, act) {
             if (act === 'downloadAll') {
                 var repl = d.querySelector('.s-sreplace');
-                api('POST', 'Suggestions/Series/' + sid + '/DownloadAll', { Replace: !!(repl && repl.checked) }).then(function (r) { Dashboard.alert(r.message); loadSuggest(false); });
+                api('POST', 'Suggestions/Series/' + sid + '/DownloadAll', { Replace: !!(repl && repl.checked) }).then(function (r) { loadSuggest(false); });
             } else if (act === 'fixGuessed') {
                 var list = [];
                 (sugData.items || []).forEach(function (e) {
@@ -1203,18 +1276,18 @@
                 if (!confirm('Zařadit ' + list.length + (list.length === 1 ? ' díl' : list.length < 5 ? ' díly' : ' dílů') + ' (přesun do složky řady a přejmenování)?\n\n' + list.slice(0, 25).join('\n') + (list.length > 25 ? '\n… a dalších ' + (list.length - 25) : ''))) return;
                 d.querySelectorAll('.s-series').forEach(function (b) { b.disabled = true; });
                 api('POST', 'Suggestions/Series/' + sid + '/FixGuessed').then(function (r) {
-                    if (r.background) { Dashboard.alert(r.message + ' Po dokončení se seznam obnoví.'); watchOps(); } else Dashboard.alert(r.message);
+                    if (r.background) watchOps();
                 });
             } else if (act === 'deleteSeries') {
                 var sum = (sugData.series || []).filter(function (x) { return x.SeriesId === sid; })[0] || {};
                 if (!confirm('Smazat CELÝ seriál „' + sum.Name + '“ (' + sum.Episodes + ' dílů) z disku?\n\n' + (sum.Folders || []).join('\n') + '\n\nNejde vrátit.')) return;
-                api('POST', 'Suggestions/Series/' + sid + '/Delete').then(function (r) { Dashboard.alert(r.message); loadSuggest(false); });
+                api('POST', 'Suggestions/Series/' + sid + '/Delete').then(function (r) { loadSuggest(false); });
             } else if (act === 'searchNow') {
-                api('POST', 'Suggestions/Series/' + sid + '/SearchNow').then(function (r) { Dashboard.alert(r.message); });
+                api('POST', 'Suggestions/Series/' + sid + '/SearchNow');
             } else if (act === 'missingOn' || act === 'missingOff') {
-                api('POST', 'Suggestions/Series/' + sid + '/FindMissing', { Enable: act === 'missingOn' }).then(function (r) { Dashboard.alert(r.message); loadSuggest(false); });
+                api('POST', 'Suggestions/Series/' + sid + '/FindMissing', { Enable: act === 'missingOn' }).then(function (r) { loadSuggest(false); });
             } else if (act === 'downloadMissing') {
-                api('POST', 'Suggestions/Series/' + sid + '/DownloadAll', { Replace: false, Kind: 'missing' }).then(function (r) { Dashboard.alert(r.message); loadSuggest(false); });
+                api('POST', 'Suggestions/Series/' + sid + '/DownloadAll', { Replace: false, Kind: 'missing' }).then(function (r) { loadSuggest(false); });
             } else if (act === 'rejectAll') {
                 if (!confirm('Nenavrhovat žádný díl tohoto seriálu?')) return;
                 api('POST', 'Suggestions/Series/' + sid + '/Reject').then(function () { loadSuggest(false); });
