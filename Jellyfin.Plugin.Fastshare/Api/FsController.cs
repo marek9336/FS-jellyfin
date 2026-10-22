@@ -1305,8 +1305,9 @@ public class FsController : ControllerBase
 
         var episodes = _state.Suggestions.GetAll().Where(x => x.Kind == "episode" && x.SeriesId == seriesId).Select(x => x.ItemId);
         _state.Suggestions.SetSeriesTarget(seriesId, q, episodes);
-        Advisor.Restart();
-        return Ok(new { success = true, message = (q == null ? "Zpět na převažující kvalitu." : $"Sjednotit na {q}.") + " Kontrola se spustila znovu." });
+        Advisor.Prioritize(seriesId); // díly pod novým cílem se hledají přednostně
+        return Ok(new { success = true, message = (q == null ? "Zpět na převažující kvalitu." : $"Sjednotit na {q} — díly pod {q} se objeví k vyřízení a hledají se na Fastshare přednostně.")
+            + " Kontrola teď znovu načítá knihovnu (pár minut). " + NextSearchNote() });
     }
 
     /// <summary>🗑 Smazat celý film (dostal se do knihovny omylem). GUI se předem ptá.</summary>
