@@ -882,6 +882,56 @@ public class FsController : ControllerBase
             }));
     }
 
+    /// <summary>
+    /// 🎬 Film ve Seriálech („Hospoda/Hunger Games…avi") → do knihovny filmů jako „Název (rok)/Název (rok).avi".
+    /// Funguje pro návrh „tomovies" i pro jakýkoli díl (ruční „Je to film").
+    /// </summary>
+    [HttpPost("Suggestions/{id}/ToMovies")]
+    public ActionResult ToMovies([FromRoute] string id, [FromBody] OwnFolderRequest r)
+    {
+        var s = _state.Suggestions.Get(id);
+        var v = s?.Versions.FirstOrDefault(x => x.Path == r.Path);
+        var title = MediaOrganizer.Sanitize((r.Name ?? string.Empty).Trim());
+        var movies = Plugin.Instance?.Configuration.MoviesPath;
+        if (s == null || v == null || string.IsNullOrWhiteSpace(title))
+        {
+            return NotFound(new { success = false, message = "Soubor v návrhu není, nebo chybí název filmu." });
+        }
+
+        var roots = Advisor.LibraryRoots();
+        if (string.IsNullOrWhiteSpace(movies) || !LibraryFiles.IsInsideLibrary(Path.Combine(movies, "x"), roots))
+        {
+            return BadRequest(new { success = false, message = "Cesta k filmům v Nastavení (" + movies + ") není knihovna Jellyfinu." });
+        }
+
+        var name = r.Year is >= 1900 and <= 2100
+            ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{title} ({r.Year})")
+            : title;
+        var dir = Path.Combine(movies, name);
+        var path = v.Path;
+        var oldDir = Path.GetDirectoryName(path)!;
+        return RunFileOp(
+            new[] { "sug:" + id, "path:" + path },
+            $"⏳ Přesouvám do {dir} — mezi Seriály a Filmy se soubor kopíruje, může to trvat i pár minut.",
+            () => LibraryFiles.MoveVideo(path, dir, name, roots),
+            moved =>
+            {
+                _logger.LogInformation("Fastshare: film ze Seriálů {From} → {To}", path, moved);
+                _state.Suggestions.Update(id, x =>
+                {
+                    x.Versions = x.Versions.Where(y => y.Path != path).ToList();
+                    x.DeletePaths = x.DeletePaths.Where(p => p != path).ToList();
+                    x.Note = "Přesunuto do Filmů: " + moved;
+                    if (x.Versions.Count == 0)
+                    {
+                        x.Status = "done";
+                        x.DecidedUtc = DateTime.UtcNow;
+                    }
+                });
+                RemoveEmptyFolders(new List<string> { oldDir }, roots);
+            });
+    }
+
     public sealed class OwnFolderRequest
     {
         public string Path { get; set; } = string.Empty;

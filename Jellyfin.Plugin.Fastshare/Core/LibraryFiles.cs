@@ -169,6 +169,28 @@ public static class LibraryFiles
         return null;
     }
 
+    /// <summary>
+    /// Je „díl" ve Seriálech ve skutečnosti film („Hospoda/Hunger Games-Síla vzdoru-1.část (2014).avi",
+    /// „Dunkerk (2017).avi")? Název nemá nic společného se seriálem a soubor je dlouhý jako film (70+ min),
+    /// nebo délka neznámá a v názvu je rok. Vrací důvod, nebo null.
+    /// </summary>
+    public static string? MovieInSeries(LibraryVersion v, IEnumerable<string?> seriesTitles)
+    {
+        var f = new FsFile { FileName = Path.GetFileName(v.Path) };
+        FileNameParser.Fill(f);
+        if (f.Episode != null || seriesTitles.Any(t => TitlesOverlap(f.Title, t)))
+        {
+            return null;
+        }
+
+        if (v.DurationSec is >= 70 * 60)
+        {
+            return $"{v.DurationSec / 3600} h {v.DurationSec % 3600 / 60} min a název nesedí k seriálu";
+        }
+
+        return v.DurationSec == null && f.Year != null ? $"v názvu je rok {f.Year} a název nesedí k seriálu" : null;
+    }
+
     /// <summary>Sedí soubor k dílu? Název souboru říká jiné SxxEyy → důvod, jinak null.</summary>
     public static string? EpisodeSuspect(LibraryVersion v, int? season, int? episode)
     {

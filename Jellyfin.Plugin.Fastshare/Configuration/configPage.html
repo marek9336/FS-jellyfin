@@ -250,9 +250,11 @@
                             <option value="720p">720p</option><option value="1080p">1080p (Full HD)</option></select></div>
                         <div class="inputContainer"><input is="emby-input" type="number" id="cfgSuggestRecheckDays" label="Znovu hledat po (dní)" min="1" /></div>
                         <div class="inputContainer"><input is="emby-input" type="number" id="cfgAutoSearchesPerHour" label="Automatických hledání za hodinu" min="0" /></div>
+                        <div class="inputContainer"><input is="emby-input" type="text" id="cfgSearchHours" label="Hledat jen v hodinách (např. 1-7 nebo 1-7,13-15)" /></div>
                     </div>
-                    <div class="fieldDescription">Strop platí pro kontrolu knihovny i hlídač dohromady (ruční hledání ne), dotazy jsou rozložené
-                        rovnoměrně. Při 20/h projde 1 000 filmů zhruba za dva dny — na pozadí, nikoho to neruší.</div>
+                    <div class="fieldDescription">Strop platí pro kontrolu knihovny i hlídač dohromady (ruční hledání ne). Dotazy jsou rozložené
+                        s náhodným rozestupem (±25 %) a jdou jen v zadaných hodinách; prázdné = kdykoli. Díly seriálů se hledají po seriálech
+                        (1–2 dotazy na seriál), filmy po jednom. Příklad: 2/h v okně 1–7 = 12 dotazů za noc.</div>
 
                     <h2>Hlídač</h2>
                     <div class="fs-grid">
@@ -906,10 +908,11 @@
             var isEp = x.Kind === 'episode';
             var fixSeason = v.FileSeason != null ? v.FileSeason : (x.Season != null ? x.Season : 1);
             // ruční oprava je u každé verze — i když ji kontrola za podezřelou nepovažuje (Saw 3 × Saw 3D)
-            var edit = x.Kind === 'misplaced' ? '' : (isEp
+            var edit = (x.Kind === 'misplaced' || x.Kind === 'tomovies') ? '' : (isEp
                 ? '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="editEpisode" data-path="' + p + '" title="Zadat řadu a díl ručně — soubor se přesune a přejmenuje">✏️ Řada/díl</button>'
+                    + ' <button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="toMovie" data-path="' + p + '" title="Tohle není díl, ale film — přesunout do Filmů">🎬 Je to film</button>'
                 : '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="otherMovie" data-path="' + p + '" title="Soubor je jiný film — najít ho v TMDb, nebo oddělit do vlastní složky">✏️ Jiný film</button>');
-            if (v.Suspect) {
+            if (v.Suspect && x.Kind !== 'tomovies') {
                 fix = '<div class="fs-sub" style="opacity:1; color:#ffb74d; margin-left:1.6em;">⚠️ ' + esc(v.Suspect) + ' '
                     + (isEp && v.FileEpisode != null
                         ? '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="fixEpisode" data-path="' + p + '" title="Přesune soubor do správné řady jako „' + esc(x.SeriesName) + ' - ' + epTag(fixSeason, v.FileEpisode) + '“">🔧 Zařadit jako ' + epTag(fixSeason, v.FileEpisode) + '</button>'
@@ -948,7 +951,7 @@
             sugData.items.forEach(function (x) {
                 if (x.Status !== 'new') counts.decided++;
                 else if (x.Kind === 'episode' || x.Kind === 'missing') counts.series++;
-                else counts[x.Kind]++;
+                else counts[x.Kind === 'tomovies' ? 'misplaced' : x.Kind]++;
             });
             el('fsSugFilters').innerHTML = Object.keys(KIND).map(function (k) {
                 return '<button is="emby-button" type="button" class="raised fs-btn fs-sug-f' + (k === sugFilter ? ' button-submit' : '') + '" data-k="' + k + '">'
@@ -998,6 +1001,21 @@
                     + ' <span style="opacity:.6;">(řadu a díl můžeš opravit)</span></div>' + opHtml;
                 actions = '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="move">🚚 Přesunout do Seriálů</button>'
                     + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="Nechat ve Filmech">✋ Nechat</button>'
+                    + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Smazat soubor">🗑</button>';
+                return '<div class="fs-row" data-id="' + esc(x.Id) + '"><div class="fs-main">' + head + body + '<div class="s-msg fs-msg"></div></div>'
+                    + '<div style="display:flex; gap:.3em; flex-wrap:wrap; align-items:center;">' + actions + '</div></div>';
+            }
+            if (x.Kind === 'tomovies' && x.Status === 'new') {
+                var v0 = x.Versions[0] || {};
+                head = '<div class="fs-name">🎬 ' + esc(x.Title) + (x.Year ? ' (' + x.Year + ')' : '') + ' <span style="opacity:.6; font-weight:normal;">· film ve Seriálech (' + esc(x.SeriesName || '') + ')</span></div>';
+                body = x.Versions.map(function (v) { return verRow(x, v, 1, false); }).join('')
+                    + '<div class="fs-sub">' + esc(x.Note || '') + '</div>'
+                    + '<div class="fs-form" style="background:none; padding:0;">'
+                    + '<div class="inputContainer" style="flex:1; min-width:200px;"><input is="emby-input" type="text" class="s-name" label="Název filmu" value="' + esc(x.Title || '') + '"></div>'
+                    + '<div class="inputContainer" style="width:90px;"><input is="emby-input" type="number" class="s-year" label="Rok" value="' + (x.Year || '') + '"></div></div>'
+                    + '<div class="fs-sub">➡️ přesune se do <strong>' + esc(x.TargetDir || '?') + '/Název (rok)/</strong>, Jellyfin ho pak najde jako film</div>' + opHtml;
+                actions = '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="toMovies" data-path="' + esc(v0.Path || '') + '">🎬 Přesunout do Filmů</button>'
+                    + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="Je to opravdu díl seriálu — nechat">✋ Nechat</button>'
                     + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Smazat soubor">🗑</button>';
                 return '<div class="fs-row" data-id="' + esc(x.Id) + '"><div class="fs-main">' + head + body + '<div class="s-msg fs-msg"></div></div>'
                     + '<div style="display:flex; gap:.3em; flex-wrap:wrap; align-items:center;">' + actions + '</div></div>';
@@ -1130,7 +1148,7 @@
             } else {
                 var list = sugData.items.filter(function (x) {
                     if (sugFilter === 'decided') return x.Status !== 'new';
-                    return x.Status === 'new' && x.Kind === sugFilter && (!onlyC || x.Candidate);
+                    return x.Status === 'new' && (x.Kind === sugFilter || (sugFilter === 'misplaced' && x.Kind === 'tomovies')) && (!onlyC || x.Candidate);
                 });
                 list = sortItems(list);
                 list.slice(0, 300).forEach(function (x) { html += itemHtml(x); });
@@ -1253,6 +1271,12 @@
                 api('POST', 'Suggestions/' + enc + '/Move', {
                     Season: parseInt(row.querySelector('.s-mseason').value, 10), Episode: parseInt(row.querySelector('.s-mepisode').value, 10)
                 }).then(done, fail);
+            } else if (act === 'toMovies') {
+                var tname = row.querySelector('.s-name').value.trim(), tyear = parseInt(row.querySelector('.s-year').value, 10) || null;
+                if (!tname) { msg.textContent = 'Napiš název filmu.'; return; }
+                row.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+                msg.textContent = '⏳ Spouštím přesun…';
+                api('POST', 'Suggestions/' + enc + '/ToMovies', { Path: row.querySelector('[data-act=toMovies]').getAttribute('data-path'), Name: tname, Year: tyear }).then(done, fail);
             } else if (act === 'reopen') {
                 api('POST', 'Suggestions/' + enc + '/Reopen').then(done, fail);
             } else if (act === 'deleteVersions') {
@@ -1296,6 +1320,20 @@
                     ebox.querySelector('.s-ego').disabled = true;
                     api('POST', 'Suggestions/' + enc + '/FixEpisode', { Path: path, Season: se, Episode: ep }).then(function (r) { startedOrDone(msg, r); },
                         function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); ebox.querySelector('.s-ego').disabled = false; });
+                });
+            } else if (act === 'toMovie') {
+                var mbox = row.querySelector('.s-vfix[data-path="' + CSS.escape(path) + '"]');
+                mbox.innerHTML = '<div class="fs-form" style="background:#151515;">'
+                    + '<div class="inputContainer" style="flex:1; min-width:200px;"><input is="emby-input" type="text" class="s-mname" label="Název filmu" value="' + esc(v.FileTitle || '') + '"></div>'
+                    + '<div class="inputContainer" style="width:90px;"><input is="emby-input" type="number" class="s-myear" label="Rok" value="' + (v.FileYear || '') + '"></div>'
+                    + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-mgo">🎬 Přesunout do Filmů</button></div>'
+                    + '<div class="fs-sub">Soubor půjde do „' + esc((cfgCache && cfgCache.MoviesPath) || 'Filmy') + '/Název (rok)/“ a Jellyfin ho vezme jako film.</div>';
+                mbox.querySelector('.s-mgo').addEventListener('click', function () {
+                    var n = mbox.querySelector('.s-mname').value.trim(), y = parseInt(mbox.querySelector('.s-myear').value, 10) || null;
+                    if (!n) { msg.textContent = 'Napiš název filmu.'; return; }
+                    mbox.querySelector('.s-mgo').disabled = true;
+                    api('POST', 'Suggestions/' + enc + '/ToMovies', { Path: path, Name: n, Year: y }).then(function (r) { startedOrDone(msg, r); },
+                        function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); mbox.querySelector('.s-mgo').disabled = false; });
                 });
             } else if (act === 'otherMovie') {
                 // Sloučené do jedné položky (stejná složka / „Sloučit verze") jde oddělit jen přesunem do vlastní složky.
@@ -1384,7 +1422,7 @@
         el('fsSugStop').addEventListener('click', function () { api('POST', 'Suggestions/Stop').then(function () { setTimeout(function () { loadSuggest(false); }, 800); }); });
 
         // ── Nastavení ────────────────────────────────────────────
-        var cfgText = ['FastshareUsername', 'FastsharePassword', 'MoviesPath', 'SeriesPath', 'WindowExtraRanges', 'SuggestTargetQuality',
+        var cfgText = ['FastshareUsername', 'FastsharePassword', 'MoviesPath', 'SeriesPath', 'WindowExtraRanges', 'SearchHours', 'SuggestTargetQuality',
             'PreferredLang1', 'PreferredLang2', 'PreferredLang3', 'CodecPreference', 'UnknownLangAs', 'MaxQuality', 'HdrMode', 'DvMode'];
         var cfgNum = ['MinFreeSpaceGb', 'MaxParallelDownloads', 'SpeedLimitMbps', 'PauseBetweenSeconds', 'DailyCapGb', 'RetryAttempts',
             'DuplicateSizeTolerancePercent', 'WindowFromHour', 'WindowToHour', 'MaxMovieSizeGb', 'MaxEpisodeSizeGb', 'MaxBitrateMbps',

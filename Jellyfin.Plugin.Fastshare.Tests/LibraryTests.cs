@@ -114,7 +114,8 @@ public sealed class LibraryTests : IDisposable
         await gate.WaitAsync(CancellationToken.None);
         await gate.WaitAsync(CancellationToken.None);
         await gate.WaitAsync(CancellationToken.None);
-        Assert.True(sw.Elapsed >= TimeSpan.FromSeconds(0.9), $"jen {sw.Elapsed}");
+        // dva rozestupy po 0,5 s ± 25 % (náhoda, ať dotazy nechodí jako hodinky)
+        Assert.True(sw.Elapsed >= TimeSpan.FromSeconds(0.7), $"jen {sw.Elapsed}");
         Assert.Equal(TimeSpan.FromSeconds(180), new SearchGate(() => 20).Interval);
         Assert.Equal(TimeSpan.Zero, new SearchGate(() => 0).Interval);
     }
@@ -272,6 +273,17 @@ public sealed class LibraryTests : IDisposable
         Assert.Throws<FileNotFoundException>(() => LibraryFiles.MoveVideo(src, dest, "Skrytá tvář sportu - S01E02", [movies, series]));
         Assert.Single(Directory.GetFiles(dest));
     }
+
+    // Skutečné soubory ve složce seriálu Hospoda (22. 10. 2026)
+    [Theory]
+    [InlineData("/Serialy/Hospoda/Hunger Games-Síla vzdoru-1.část (2014) CZ-dabing TOP.avi", 7380, true)]
+    [InlineData("/Serialy/Hospoda/Dunkerk (2017,cz,dabing,HQ)ddd.avi", 6420, true)]
+    [InlineData("/Serialy/Hospoda/Hunger Games-Vražedná pomsta (2013) CZ-dabing.avi", null, true)]
+    [InlineData("/Serialy/Hospoda/hospoda.19.bezdomovec.avi", 1620, false)]
+    [InlineData("/Serialy/Hospoda/Hospoda-35-Hra-HD.avi", 5000, false)]
+    [InlineData("/Serialy/BBC_Sexualita/Vlasy.avi", 3000, false)]
+    public void MovieInSeries(string path, int? seconds, bool movie) =>
+        Assert.Equal(movie, LibraryFiles.MovieInSeries(new LibraryVersion { Path = path, DurationSec = seconds }, ["Hospoda", "BBC Sexualita"]) != null);
 
     [Fact]
     public void MinQualityFiltersCandidates()

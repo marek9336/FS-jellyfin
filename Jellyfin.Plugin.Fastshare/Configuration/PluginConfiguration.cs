@@ -110,6 +110,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public int AutoSearchesPerHour { get; set; } = 20;
 
+    /// <summary>
+    /// V kterých hodinách smí jít automatická hledání („1-7", „1-7,13-15"; prázdné = kdykoli). Mimo okno kontrola
+    /// a hlídač čekají. Výchozí v noci, kdy Fastshare nikdo nepoužívá.
+    /// </summary>
+    public string SearchHours { get; set; } = "1-7";
+
     /// <summary>Jak často sama projít knihovnu (dny). 0 = jen ručně tlačítkem.</summary>
     public int SuggestIntervalDays { get; set; } = 7;
 

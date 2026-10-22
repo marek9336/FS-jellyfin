@@ -338,7 +338,7 @@ public sealed class LibraryAdvisor : BackgroundService
 
         // Duplicity, filmy bez metadat a díly jsou hotové hned — uložit, ať jsou v GUI, i když
         // hledání lepších verzí poběží ještě dny
-        _state.Suggestions.Merge(found, new[] { "identify", "duplicate", "episode", "missing", "misplaced" });
+        _state.Suggestions.Merge(found, new[] { "identify", "duplicate", "episode", "missing", "misplaced", "tomovies" });
 
         // Pořadí: duplicity filmů → díly seriálů → lepší verze filmů; v rámci skupiny nejdéle nehledané
         var recheck = TimeSpan.FromDays(Math.Max(1, cfg.SuggestRecheckDays));
@@ -431,8 +431,8 @@ public sealed class LibraryAdvisor : BackgroundService
 
         // Neúplné hledání (výpadek) nesmí smazat dřívější návrhy lepších verzí, na které se nedostalo
         _state.Suggestions.Merge(found, complete
-            ? new[] { "identify", "duplicate", "episode", "missing", "misplaced", "upgrade" }
-            : new[] { "identify", "duplicate", "episode", "missing", "misplaced" });
+            ? new[] { "identify", "duplicate", "episode", "missing", "misplaced", "tomovies", "upgrade" }
+            : new[] { "identify", "duplicate", "episode", "missing", "misplaced", "tomovies" });
         Status.Phase = null;
         var summary = string.Create(
             CultureInfo.InvariantCulture,
@@ -609,13 +609,36 @@ public sealed class LibraryAdvisor : BackgroundService
                 }
 
                 LibraryFiles.MarkLengths(versions);
+                var epId = ep.Id.ToString("N");
+
+                // Neočíslovaný „díl", který je ve skutečnosti film → návrh přesunu do Filmů (místo dílu)
+                if (ep.IndexNumber == null && versions.All(v => !v.FileGuessSure)
+                    && versions.Select(v => (v, why: LibraryFiles.MovieInSeries(v, titles!))).ToList() is var mv && mv.All(x => x.why != null))
+                {
+                    var f0 = LibraryFiles.Describe(versions[0]);
+                    var movieName = string.IsNullOrWhiteSpace(f0.Title) ? Path.GetFileNameWithoutExtension(versions[0].Path) : f0.Title;
+                    found.Add(new Suggestion
+                    {
+                        Id = "tomov:" + epId,
+                        Kind = "tomovies",
+                        ItemId = epId,
+                        Title = movieName,
+                        Year = f0.Year,
+                        SeriesId = seriesId,
+                        SeriesName = name,
+                        Note = mv[0].why,
+                        TargetDir = cfg.MoviesPath,
+                        Versions = versions,
+                    });
+                    continue;
+                }
+
                 var below = versions[0].Quality != null && LibraryFiles.Level(versions[0].Quality) < targetLevel;
                 if (!below && versions.Count < 2 && versions.All(v => v.Suspect == null))
                 {
                     continue;
                 }
 
-                var epId = ep.Id.ToString("N");
                 var sug = new Suggestion
                 {
                     Id = "ep:" + epId,
@@ -905,8 +928,9 @@ public sealed class LibraryAdvisor : BackgroundService
         var rest = _jobs.Skip(Math.Max(0, Status.Done - 1)).Where(NeedsSearch).ToList();
         var left = rest.Count(j => j.NetKey == null)
             + (2 * rest.Where(j => j.NetKey != null && !_seriesFetched.Contains(j.NetKey)).Select(j => j.NetKey).Distinct().Count());
-        var hours = left * _state.SearchGate.Interval.TotalHours;
-        Status.Phase = $"{_searchPhase} — strop {Plugin.Instance?.Configuration.AutoSearchesPerHour}/h, další hledání v "
+        var hours = left * _state.SearchGate.Interval.TotalHours / _state.SearchGate.WindowFraction;
+        var win = _state.SearchGate.WindowText;
+        Status.Phase = $"{_searchPhase} — strop {Plugin.Instance?.Configuration.AutoSearchesPerHour}/h{(win != null ? " jen " + win : string.Empty)}, další hledání v "
             + nextUtc.ToLocalTime().ToString("H:mm", CultureInfo.InvariantCulture)
             + (hours >= 1 ? $", zbývá asi {hours:0} h" : string.Empty);
     }

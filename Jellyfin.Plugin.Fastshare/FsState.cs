@@ -114,7 +114,7 @@ public sealed class FsState : IDisposable
             };
         }
 
-        SearchGate = new SearchGate(() => Config.AutoSearchesPerHour);
+        SearchGate = new SearchGate(() => Config.AutoSearchesPerHour, () => Config.SearchHours);
 
         Limiter = new SpeedLimiter(() =>
         {

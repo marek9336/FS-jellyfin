@@ -53,6 +53,9 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
     smazání celého seriálu,
   - 🔎 *Hledat teď* u seriálu (a zapnutí „Dohledat chybějící") ho pošle na začátek fronty hledání; chybějící díl,
     který v cílové kvalitě není, se nabídne v nejlepší nižší — po stažení se dál hledá lepší verze,
+  - 🎬 filmy ve složkách seriálů (neočíslovaný „díl" 70+ min, název nesedí k seriálu) → „Přesunout do Filmů"
+    (`Filmy/Název (rok)/`); u každého dílu ruční „🎬 Je to film",
+  - automatická hledání jen v okně hodin (Nastavení, výchozí 1–7 h) s náhodným rozestupem ±25 %,
   - po výpadku Fastshare (HTTP 5xx, 429) kontrola po hodinové pauze sama pokračuje,
   - řazení: nalezená lepší verze první, nejvíc ušetří místa (u lepší verze: dnešní soubory − nový soubor, takže
     větší nový soubor jde dolů), nejvíc kopií, od nejhorší / nejlepší kvality,
