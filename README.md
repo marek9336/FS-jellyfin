@@ -10,6 +10,12 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
 - **Zařazení do fronty** s možností opravit název, rok, řadu a díl, jak mají být v knihovně.
 - **Souběžné stahování** (1–8 souborů najednou), navazování po výpadku (HTTP Range), kontrola, že přišel
   opravdu soubor (Fastshare bez přihlášení vrací prázdnou odpověď).
+- **⛔ STOP** v hlavičce: okamžitě zastaví všechna stahování a jakékoli spojení na Fastshare (kontrola, hlídač, ruční
+  hledání, přihlášení), dokud ho nepovolíš — pro jistotu při podezření na ban. Stažené části se po povolení navážou.
+- **Fronta**: filmy před seriály, díly seriálu pohromadě (S01E01 → …), ⚡ přednost před vším; výběr víc položek
+  (klepnutí / Ctrl, Shift rozsah, hlavička seriálu = celý seriál) a hromadně ⚡, nahoru, na konec, odebrat; nahoře
+  přehled seriálů ve frontě (kolik dílů se vylepšuje na vyšší kvalitu, kolik chybějících). „⚡ Stahovat teď (mimo
+  okno)" pustí celou frontu hned, po vyprázdnění se vrátí běžné okno.
 - **Časová okna** — od–do, další okna („22-3,12-13") nebo rozvrh po dnech; volitelně přerušit rozjeté
   soubory na konci okna. „⚡ Stáhnout teď" okna obchází.
 - **Volitelné limity**: společný limit rychlosti všech stahování, denní strop, minimální volné místo,

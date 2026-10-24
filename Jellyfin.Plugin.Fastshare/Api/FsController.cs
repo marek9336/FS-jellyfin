@@ -5,8 +5,22 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Fastshare.Api;
 
+/// <summary>Neošetřená výjimka klienta (⛔ STOP, nepřihlášeno…) → srozumitelná hláška místo HTTP 500.</summary>
+public sealed class FastshareErrorFilter : Microsoft.AspNetCore.Mvc.Filters.ExceptionFilterAttribute
+{
+    public override void OnException(Microsoft.AspNetCore.Mvc.Filters.ExceptionContext context)
+    {
+        if (context.Exception is FastshareException ex)
+        {
+            context.Result = new ObjectResult(new { success = false, message = ex.Message }) { StatusCode = 409 };
+            context.ExceptionHandled = true;
+        }
+    }
+}
+
 /// <summary>REST API pro stránku pluginu. Jen pro adminy, vše pod /Plugins/Fastshare/...</summary>
 [ApiController]
+[FastshareErrorFilter]
 [Authorize(Policy = "RequiresElevation")]
 [Route("Plugins/Fastshare")]
 [Produces("application/json")]
@@ -412,9 +426,24 @@ public class FsController : ControllerBase
         var ordered = QueueOrder.ByPriority(items.Where(i => i.Status is QueueItemStatus.Queued or QueueItemStatus.Downloading))
             .OrderBy(i => i.Status == QueueItemStatus.Downloading ? 0 : 1)
             .ToList();
+        // Seriály ve frontě: kolik dílů se vylepšuje (náhrada horší verze z Navržených), kolik chybějících
+        var series = ordered.Where(i => i.MediaType == MediaKind.Episode)
+            .GroupBy(i => QueueOrder.SeriesKey(i)!)
+            .Select(g => new
+            {
+                name = g.First().SeriesTitle ?? g.First().Title,
+                total = g.Count(),
+                upgrading = g.Count(i => i.ReplacePaths is { Count: > 0 } || (i.SuggestionId?.StartsWith("ep:", StringComparison.Ordinal) ?? false)),
+                missing = g.Count(i => i.SuggestionId?.StartsWith("miss:", StringComparison.Ordinal) ?? false),
+                downloading = g.Count(i => i.Status == QueueItemStatus.Downloading),
+                quality = g.GroupBy(i => i.Quality ?? "?").OrderByDescending(q => q.Count()).First().Key,
+                forced = g.Any(i => i.ForceNow),
+            })
+            .ToList();
         return Ok(new
         {
             status = StatusDto(),
+            series,
             queue = ordered.Select(ItemDto),
             problems = items.Where(i => i.Status == QueueItemStatus.Error).OrderByDescending(i => i.AddedUtc).Select(ItemDto),
             done = items.Where(i => i.Status is QueueItemStatus.Done or QueueItemStatus.Skipped)
@@ -469,6 +498,8 @@ public class FsController : ControllerBase
         return new
         {
             paused = _state.Queue.WorkerPaused,
+            forced = _state.Queue.IgnoreWindow,
+            stopped = _state.Queue.FastshareStopped,
             active = active.Select(a => new
             {
                 itemId = a.ItemId,
@@ -544,6 +575,57 @@ public class FsController : ControllerBase
     [HttpPost("Queue/Reorder")]
     public ActionResult Reorder([FromBody] ReorderRequest r) => Ok(new { success = _state.Queue.Reorder(r.Ids) });
 
+    public sealed class BulkRequest
+    {
+        public List<Guid> Ids { get; set; } = new();
+
+        /// <summary>now (⚡) | unforce | top | bottom | remove</summary>
+        public string Op { get; set; } = string.Empty;
+    }
+
+    /// <summary>Hromadná akce nad vybranými položkami fronty (výběr s Ctrl/Shift v GUI).</summary>
+    [HttpPost("Queue/Bulk")]
+    public ActionResult Bulk([FromBody] BulkRequest r)
+    {
+        if (r.Ids.Count == 0)
+        {
+            return BadRequest(new { success = false, message = "Nic není vybráno." });
+        }
+
+        var n = 0;
+        switch (r.Op)
+        {
+            case "now":
+                foreach (var id in r.Ids)
+                {
+                    _state.Queue.Update(id, i => i.RetryAfterUtc = null);
+                    n += _state.Queue.ForceNow(id) ? 1 : 0;
+                }
+
+                return Ok(new { success = true, message = $"⚡ Přednost u {n} položek — stahují se hned, i mimo okno." });
+            case "unforce":
+                n = r.Ids.Count(id => _state.Queue.Unforce(id));
+                return Ok(new { success = true, message = $"Přednost zrušena u {n} položek." });
+            case "top":
+                _state.Queue.Reorder(r.Ids);
+                return Ok(new { success = true, message = $"{r.Ids.Count} položek přesunuto nahoru (v rámci filmů / seriálů)." });
+            case "bottom":
+                var queued = QueueOrder.ByPriority(_state.Queue.GetAll().Where(i => i.Status == QueueItemStatus.Queued)).Select(i => i.Id).ToList();
+                _state.Queue.Reorder(queued.Where(id => !r.Ids.Contains(id)).Concat(r.Ids).ToList());
+                return Ok(new { success = true, message = $"{r.Ids.Count} položek přesunuto na konec." });
+            case "remove":
+                foreach (var id in r.Ids)
+                {
+                    _state.CancelDownload(id);
+                    n += _state.Queue.Remove(id, force: true) ? 1 : 0;
+                }
+
+                return Ok(new { success = true, message = $"Odebráno {n} položek z fronty." });
+            default:
+                return BadRequest(new { success = false, message = "Neznámá akce." });
+        }
+    }
+
     [HttpPost("Queue/GroupSeries")]
     public ActionResult GroupSeries() => Ok(new { success = _state.Queue.GroupSeries() });
 
@@ -551,10 +633,36 @@ public class FsController : ControllerBase
     [HttpPost("Queue/{id}/Stop")]
     public ActionResult Stop([FromRoute] Guid id) => Ok(new { success = _state.CancelDownload(id) > 0 });
 
-    [HttpPost("Worker/{action}")]
-    public ActionResult Worker([FromRoute] string action)
+    public sealed class StopRequest
     {
-        switch (action)
+        public bool On { get; set; } = true;
+    }
+
+    /// <summary>
+    /// ⛔ STOP: okamžitě zastaví všechna stahování a jakékoli spojení na Fastshare (kontrola, hlídač, ruční hledání,
+    /// přihlášení), dokud uživatel nepovolí. Pro jistotu při podezření na ban. Stažené části zůstanou a navážou se.
+    /// </summary>
+    [HttpPost("Stop")]
+    public ActionResult FastshareStop([FromBody] StopRequest r)
+    {
+        _state.Queue.FastshareStopped = r.On;
+        if (r.On)
+        {
+            _state.CancelDownload();
+            _logger.LogWarning("Fastshare: ⛔ STOP — všechna komunikace s Fastshare zastavena uživatelem");
+            return Ok(new { success = true, stopped = true, message = "⛔ Fastshare zastaven: stahování přerušeno (stažené části zůstanou), hledání stojí, žádné spojení na Fastshare. Povolíš tlačítkem ▶ Povolit Fastshare." });
+        }
+
+        _state.Queue.Wake();
+        _logger.LogInformation("Fastshare: ▶ STOP zrušen — komunikace s Fastshare povolena");
+        return Ok(new { success = true, stopped = false, message = "▶ Fastshare povolen — stahování a hledání pokračují podle oken a stropu." });
+    }
+
+    // pozor: {action} je v ASP.NET rezervované (název akce) — s ním se Worker/pause nikdy netrefil
+    [HttpPost("Worker/{op}")]
+    public ActionResult Worker([FromRoute] string op)
+    {
+        switch (op)
         {
             case "pause":
                 _state.Queue.WorkerPaused = true;
@@ -565,11 +673,20 @@ public class FsController : ControllerBase
                 _state.ClearOutage();
                 _state.Queue.Wake();
                 break;
+            case "force":
+                // ⚡ celá fronta hned — mimo časové okno i denní strop (a zruší pozastavení)
+                _state.Queue.IgnoreWindow = true;
+                _state.Queue.WorkerPaused = false;
+                _state.Queue.Wake();
+                return Ok(new { success = true, paused = false, forced = true, message = "⚡ Stahuji frontu hned, mimo časové okno. Až se fronta vyprázdní, vrátí se běžné okno samo." });
+            case "unforce":
+                _state.Queue.IgnoreWindow = false;
+                return Ok(new { success = true, paused = _state.Queue.WorkerPaused, forced = false, message = "Zpět na časové okno — rozjetá stahování doběhnou, nová počkají na okno." });
             default:
                 return BadRequest();
         }
 
-        return Ok(new { paused = _state.Queue.WorkerPaused });
+        return Ok(new { success = true, paused = _state.Queue.WorkerPaused, message = _state.Queue.WorkerPaused ? "Stahování pozastaveno." : "Stahování pokračuje (v časovém okně)." });
     }
 
     // ── Navržené (kontrola knihovny) ──────────────────────────────

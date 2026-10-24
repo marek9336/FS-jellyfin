@@ -935,7 +935,9 @@ public sealed class LibraryAdvisor : BackgroundService
             + (2 * rest.Where(j => j.NetKey != null && !_seriesFetched.Contains(j.NetKey)).Select(j => j.NetKey).Distinct().Count());
         if (_state.SearchGate.Paused)
         {
-            Status.Phase = $"{_searchPhase} — automatické hledání vypnuto (strop 0 v Nastavení)";
+            Status.Phase = _state.Queue.FastshareStopped
+                ? $"{_searchPhase} — ⛔ STOP, hledání stojí, dokud Fastshare nepovolíš"
+                : $"{_searchPhase} — automatické hledání vypnuto (strop 0 v Nastavení)";
             return;
         }
 

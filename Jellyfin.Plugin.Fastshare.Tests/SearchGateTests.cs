@@ -47,3 +47,27 @@ public sealed class SearchGateTests
         Assert.True(waitUntil > DateTime.UtcNow.AddMinutes(30));
     }
 }
+
+public sealed class QueueOrderTests
+{
+    private static QueueItem Ep(string series, int s, int e, int idx, bool force = false) =>
+        new() { Title = series, SeriesTitle = series, MediaType = MediaKind.Episode, Season = s, Episode = e, SortIndex = idx, ForceNow = force, AddedUtc = DateTime.UtcNow.AddMinutes(idx) };
+
+    private static QueueItem Movie(string title, int idx, bool force = false) =>
+        new() { Title = title, MediaType = MediaKind.Movie, SortIndex = idx, ForceNow = force, AddedUtc = DateTime.UtcNow.AddMinutes(idx) };
+
+    [Fact]
+    public void MoviesFirstSeriesGroupedForceWins()
+    {
+        var items = new List<QueueItem>
+        {
+            Ep("Dexter", 1, 2, 1), Ep("Mentalista", 1, 1, 2), Ep("Dexter", 1, 1, 3), Movie("Pelíšky", 4), Ep("Mentalista", 1, 2, 5), Movie("Kytice", 6),
+        };
+        var order = QueueOrder.ByPriority(items).Select(i => i.MediaType == MediaKind.Movie ? i.Title : $"{i.Title} {i.Episode}").ToList();
+        Assert.Equal(["Pelíšky", "Kytice", "Dexter 1", "Dexter 2", "Mentalista 1", "Mentalista 2"], order);
+
+        // ⚡ u seriálu → před filmy
+        items.Add(Ep("Černobyl", 1, 1, 7, force: true));
+        Assert.Equal("Černobyl", QueueOrder.ByPriority(items).First().Title);
+    }
+}

@@ -114,7 +114,9 @@ public sealed class FsState : IDisposable
             };
         }
 
-        SearchGate = new SearchGate(() => Config.AutoSearchesPerHour, () => Config.SearchHours);
+        // ⛔ STOP: hledání stojí (strop 0) a klient na Fastshare nepustí žádný požadavek
+        SearchGate = new SearchGate(() => Queue.FastshareStopped ? 0 : Config.AutoSearchesPerHour, () => Config.SearchHours);
+        FastshareClient.Blocked = () => Queue.FastshareStopped;
 
         Limiter = new SpeedLimiter(() =>
         {

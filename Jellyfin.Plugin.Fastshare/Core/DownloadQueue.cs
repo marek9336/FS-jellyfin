@@ -74,6 +74,18 @@ public sealed class DownloadQueue
         set { lock (_lock) { _state.WorkerPaused = value; SaveLocked(); } }
     }
 
+    public bool FastshareStopped
+    {
+        get { lock (_lock) { return _state.FastshareStopped; } }
+        set { lock (_lock) { _state.FastshareStopped = value; SaveLocked(); } }
+    }
+
+    public bool IgnoreWindow
+    {
+        get { lock (_lock) { return _state.IgnoreWindow; } }
+        set { lock (_lock) { _state.IgnoreWindow = value; SaveLocked(); } }
+    }
+
     public List<QueueItem> GetAll()
     {
         lock (_lock)

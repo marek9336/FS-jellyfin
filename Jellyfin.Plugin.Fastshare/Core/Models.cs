@@ -304,6 +304,12 @@ public class PluginState
 
     public bool WorkerPaused { get; set; }
 
+    /// <summary>„⚡ Stahovat teď": celá fronta mimo časové okno a denní strop, dokud se nevyprázdní.</summary>
+    public bool IgnoreWindow { get; set; }
+
+    /// <summary>⛔ STOP: žádné spojení na Fastshare (stahování, hledání, přihlášení), dokud ho uživatel nepovolí.</summary>
+    public bool FastshareStopped { get; set; }
+
     /// <summary>Klouzavý průměr rychlosti stahování (B/s).</summary>
     public long AvgSpeedBps { get; set; }
 }

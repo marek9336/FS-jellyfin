@@ -60,12 +60,24 @@ public sealed class FastshareClient
 
     public string? LastError { get; private set; }
 
+    /// <summary>⛔ STOP — když vrátí true, klient na Fastshare nepošle nic (nastavuje FsState).</summary>
+    public static Func<bool>? Blocked { get; set; }
+
+    private static void ThrowIfBlocked()
+    {
+        if (Blocked?.Invoke() == true)
+        {
+            throw new FastshareException("Fastshare je zastavený tlačítkem ⛔ STOP — nic se nehledá ani nestahuje.");
+        }
+    }
+
     /// <summary>Zahodí hash — další volání se přihlásí znovu (po odmítnutém stahování).</summary>
     public void InvalidateSession() => _hash = null;
 
     /// <summary>Přihlásí se (nebo vrátí platný hash). Vrací null při neúspěchu, důvod v LastError.</summary>
     public async Task<string?> GetHashAsync(CancellationToken ct, bool force = false)
     {
+        ThrowIfBlocked();
         if (!force && _hash != null && DateTime.UtcNow - _hashUtc < HashLifetime)
         {
             return _hash;
@@ -172,6 +184,7 @@ public sealed class FastshareClient
     /// </summary>
     public async Task<SearchResult> SearchAsync(string term, int page, bool adult, CancellationToken ct, int perPage = 200)
     {
+        ThrowIfBlocked();
         var url = string.Create(
             CultureInfo.InvariantCulture,
             $"{ApiUrl}?process=search&pagination={perPage}&page={Math.Max(1, page)}&term={Uri.EscapeDataString(SearchTerm(term))}&adult={(adult ? 1 : 0)}");
@@ -262,6 +275,7 @@ public sealed class FastshareClient
     /// </summary>
     public async Task<FsFile> ResolveLinkAsync(string link, CancellationToken ct)
     {
+        ThrowIfBlocked();
         var id = FileIdFromLink(link) ?? throw new FastsharePermanentException("Tohle není odkaz na soubor na Fastshare (https://fastshare.cloud/číslo/název).");
         using var req = new HttpRequestMessage(HttpMethod.Get, link.Trim());
         req.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Jellyfin-Fastshare)");

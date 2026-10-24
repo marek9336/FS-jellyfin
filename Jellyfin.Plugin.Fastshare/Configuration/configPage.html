@@ -8,6 +8,9 @@
      data-require="emby-input,emby-button,emby-select,emby-checkbox">
     <style>
         #FsConfigPage .fs-busy { opacity: .6; cursor: progress !important; }
+        #FsConfigPage .fs-row.fs-sel { outline: 2px solid #90caf9; background: #1c2a36 !important; }
+        #FsConfigPage .fs-qhead { margin: .8em 0 .3em; font-weight: 600; cursor: pointer; opacity: .85; }
+        #FsConfigPage .fs-qhead:hover { opacity: 1; }
         #FsConfigPage .fs-busy::after { content: ' ⏳'; }
         #fsToasts { position: fixed; left: 50%; bottom: 1.2em; transform: translateX(-50%); z-index: 9999; display: flex; flex-direction: column;
             gap: .4em; align-items: center; width: min(92vw, 640px); pointer-events: none; }
@@ -51,6 +54,12 @@
                     <button is="emby-button" type="button" class="raised fs-tab-btn" data-tab="fsTabWatch">👁 Hlídané</button>
                     <button is="emby-button" type="button" class="raised fs-tab-btn" data-tab="fsTabSuggest">💡 Navržené</button>
                     <button is="emby-button" type="button" class="raised fs-tab-btn" data-tab="fsTabSettings">⚙️ Nastavení</button>
+                    <button is="emby-button" type="button" id="fsStopBtn" class="raised" style="margin-left:auto; background:#b71c1c; color:#fff;"
+                        title="Okamžitě zastaví veškeré stahování i hledání na Fastshare, dokud ho znovu nepovolíš (pro jistotu při podezření na ban)"><span>⛔ STOP</span></button>
+                </div>
+                <div id="fsStopBanner" class="fs-card hide" style="border-left:4px solid #ef5350; margin-top:-.8em;">
+                    ⛔ <strong>Fastshare je zastavený.</strong> Nic se nestahuje ani nehledá a na Fastshare nejde žádný požadavek
+                    (ani ruční hledání), dokud ho nepovolíš. Stažené části souborů zůstaly a po povolení se navážou.
                 </div>
             </div>
 
@@ -105,13 +114,20 @@
                     <div id="fsStatusText">Načítám stav…</div>
                     <div id="fsActive" style="margin-top:.5em;"></div>
                     <div id="fsStatusDetail" style="margin-top:.5em; font-size:.88em; opacity:.75;"></div>
-                    <button is="emby-button" type="button" id="fsPauseBtn" class="raised" style="margin-top:.75em;" title="Pozastaví stahování a zastaví i běžící přenosy (stažená část zůstane a naváže se)"><span>⏸ Pozastavit</span></button>
+                    <div style="display:flex; gap:.5em; flex-wrap:wrap; margin-top:.75em;">
+                        <button is="emby-button" type="button" id="fsPauseBtn" class="raised" title="Pozastaví stahování a zastaví i běžící přenosy (stažená část zůstane a naváže se)"><span>⏸ Pozastavit</span></button>
+                        <button is="emby-button" type="button" id="fsForceBtn" class="raised button-submit" title="Stahovat celou frontu hned — mimo časové okno i denní strop; vypne se samo, až se fronta vyprázdní"><span>⚡ Stahovat teď (mimo okno)</span></button>
+                    </div>
                 </div>
 
                 <h2 style="display:flex; align-items:center; gap:.6em; flex-wrap:wrap;">
                     <span>⬇️ Fronta <span id="fsQueueCount" style="opacity:.6; font-size:.8em;"></span></span>
                     <button is="emby-button" type="button" id="fsGroupSeries" class="raised fs-btn" style="font-size:.7em;" title="Dá díly každého seriálu k sobě a seřadí S01E01 → …"><span>🔀 Seřadit seriály</span></button>
                 </h2>
+                <div id="fsQueueSeries"></div>
+                <div id="fsQueueSel" class="fs-card hide" style="position:sticky; top:0; z-index:5; display:flex; gap:.4em; flex-wrap:wrap; align-items:center;"></div>
+                <div class="fieldDescription" style="margin:-.3em 0 .5em;">Klepnutím na řádek vybereš položku (Ctrl / další klepnutí přidá, Shift vybere rozsah),
+                    klepnutím na hlavičku seriálu celý seriál. Filmy jdou před seriály, seriál s ⚡ před vším.</div>
                 <div id="fsQueueList"></div>
 
                 <div id="fsProblemSection" class="hide">
@@ -757,9 +773,14 @@
                 + ' · volné místo ' + (s.freeSpaceBytes ? fmtBytes(s.freeSpaceBytes) : '?')
                 + ' · účet: ' + acc
                 + (s.outage ? ' · ⚠️ ' + s.outage : '')
+                + (s.forced ? ' · ⚡ vynuceno mimo časové okno (do vyprázdnění fronty)' : '')
                 + (s.archiveSupport ? ' · archivy: ' + s.archiveSupport : ' · ⚠️ rozbalování archivů nefunguje (chybí SharpCompress)');
             el('fsPauseBtn').querySelector('span').textContent = s.paused ? '▶ Pokračovat' : '⏸ Pozastavit';
             el('fsPauseBtn').setAttribute('data-paused', s.paused ? '1' : '0');
+            renderStop(!!s.stopped);
+            el('fsForceBtn').querySelector('span').textContent = s.forced ? '⏹ Vrátit na časové okno' : '⚡ Stahovat teď (mimo okno)';
+            el('fsForceBtn').setAttribute('data-forced', s.forced ? '1' : '0');
+            el('fsForceBtn').classList.toggle('button-submit', !s.forced);
         }
 
         function rowButtons(i, kind) {
@@ -782,9 +803,72 @@
             return b;
         }
 
+        var qSel = new Set(), qOrder = [], qLast = -1;
+
+        function seriesKeyOf(i) { return i.mediaType === 'episode' ? String(i.seriesTitle || i.title || '').toLowerCase() : null; }
+
+        function renderSel() {
+            var box = el('fsQueueSel');
+            box.classList.toggle('hide', qSel.size === 0);
+            if (!qSel.size) { box.innerHTML = ''; return; }
+            box.innerHTML = '<strong>Vybráno ' + qSel.size + '</strong>'
+                + '<button is="emby-button" type="button" class="raised button-submit fs-btn q-bulk" data-op="now" title="Stáhnout hned, i mimo okno">⚡ Přednost</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn q-bulk" data-op="unforce">⚡✕ Zrušit přednost</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn q-bulk" data-op="top">⬆ Nahoru</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn q-bulk" data-op="bottom">⬇ Na konec</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn q-bulk" data-op="remove">🗑 Odebrat</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn" id="fsSelAll">☑ Vybrat vše</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn" id="fsSelNone">✕ Zrušit výběr</button>';
+            box.querySelectorAll('.q-bulk').forEach(function (b) {
+                b.addEventListener('click', function () {
+                    var op = b.getAttribute('data-op');
+                    if (op === 'remove' && !confirm('Odebrat ' + qSel.size + ' položek z fronty? Rozjetá stahování se zastaví.')) return;
+                    api('POST', 'Queue/Bulk', { Ids: Array.from(qSel), Op: op }).then(function () {
+                        if (op === 'remove') qSel.clear();
+                        refreshQueue();
+                    }, refreshQueue);
+                });
+            });
+            el('fsSelAll').addEventListener('click', function () { qOrder.forEach(function (id) { qSel.add(id); }); markSel(); });
+            el('fsSelNone').addEventListener('click', function () { qSel.clear(); markSel(); });
+        }
+
+        function markSel() {
+            el('fsQueueList').querySelectorAll('.fs-row').forEach(function (r) { r.classList.toggle('fs-sel', qSel.has(r.getAttribute('data-id'))); });
+            renderSel();
+        }
+
+        function renderQueueSeries(series) {
+            var box = el('fsQueueSeries');
+            if (!series || !series.length) { box.innerHTML = ''; return; }
+            box.innerHTML = '<div class="fs-card"><strong>📺 Seriály ve frontě</strong>' + series.map(function (x) {
+                var parts = [];
+                if (x.upgrading) parts.push('🔼 vylepšuje se ' + x.upgrading + ' ' + (x.upgrading === 1 ? 'díl' : x.upgrading < 5 ? 'díly' : 'dílů') + ' na ' + esc(x.quality));
+                if (x.missing) parts.push('❓ ' + x.missing + ' chybějících');
+                var other = x.total - x.upgrading - x.missing;
+                if (other > 0) parts.push(other + ' dalších');
+                return '<div class="fs-sub" style="opacity:1;">' + (x.forced ? '⚡ ' : '') + '<strong>' + esc(x.name) + '</strong> — ' + parts.join(', ')
+                    + (x.downloading ? ' · ⬇️ právě se stahuje ' + x.downloading : '') + '</div>';
+            }).join('') + '</div>';
+        }
+
         function renderItems(list, kind, target) {
             var html = '';
+            var lastKey = undefined;
+            if (kind === 'queue') {
+                qOrder = list.map(function (i) { return String(i.id); });
+                qSel.forEach(function (id) { if (qOrder.indexOf(id) < 0) qSel.delete(id); });
+            }
             list.forEach(function (i) {
+                if (kind === 'queue' && i.status !== 'Downloading') {
+                    var key = seriesKeyOf(i);
+                    if (key !== lastKey) {
+                        var cnt = list.filter(function (x) { return x.status !== 'Downloading' && seriesKeyOf(x) === key; }).length;
+                        html += '<div class="fs-qhead" data-key="' + esc(key || '') + '" title="' + (key ? 'Vybrat celý seriál' : 'Vybrat všechny filmy') + '">'
+                            + (key ? '📺 ' + esc(i.seriesTitle || i.title) : '🎬 Filmy') + ' <span style="opacity:.6; font-weight:normal;">(' + cnt + ')</span></div>';
+                        lastKey = key;
+                    }
+                }
                 var sub = esc(i.fileName);
                 if (kind === 'queue' && i.status === 'Downloading') {
                     var pct = i.bytesTotal > 0 ? Math.floor(i.bytesDone * 100 / i.bytesTotal) : 0;
@@ -800,11 +884,39 @@
                         + (i.archiveResult ? '<br>📦 ' + esc(i.archiveResult) : '')
                         + (i.resultNote ? '<br>♻️ ' + esc(i.resultNote) : '');
                 }
-                html += '<div class="fs-row" data-id="' + i.id + '"><div class="fs-main"><div class="fs-name">' + esc(i.title) + '</div>'
+                html += '<div class="fs-row' + (kind === 'queue' && qSel.has(String(i.id)) ? ' fs-sel' : '') + '" data-id="' + i.id + '"' + (kind === 'queue' ? ' style="cursor:pointer;"' : '') + '><div class="fs-main"><div class="fs-name">' + esc(i.title) + '</div>'
                     + '<div class="fs-sub">' + sub + '</div><div>' + itemBadges(i) + '</div></div>'
                     + '<div style="display:flex; gap:.3em;">' + rowButtons(i, kind) + '</div></div>';
             });
             target.innerHTML = html || '<div class="fs-msg" style="opacity:.6;">Nic.</div>';
+            if (kind === 'queue') {
+                target.querySelectorAll('.fs-row').forEach(function (r) {
+                    r.addEventListener('click', function (e) {
+                        if (e.target.closest('button')) return;
+                        var id = r.getAttribute('data-id'), idx = qOrder.indexOf(id);
+                        if (e.shiftKey && qLast >= 0) {
+                            var a = Math.min(qLast, idx), b = Math.max(qLast, idx);
+                            for (var k = a; k <= b; k++) qSel.add(qOrder[k]);
+                        } else if (qSel.has(id)) {
+                            qSel.delete(id);
+                        } else {
+                            qSel.add(id);
+                        }
+                        qLast = idx;
+                        markSel();
+                    });
+                });
+                target.querySelectorAll('.fs-qhead').forEach(function (h) {
+                    h.addEventListener('click', function () {
+                        var key = h.getAttribute('data-key') || null;
+                        var ids = list.filter(function (x) { return x.status !== 'Downloading' && seriesKeyOf(x) === key; }).map(function (x) { return String(x.id); });
+                        var all = ids.every(function (id) { return qSel.has(id); });
+                        ids.forEach(function (id) { if (all) qSel.delete(id); else qSel.add(id); });
+                        markSel();
+                    });
+                });
+                renderSel();
+            }
             target.querySelectorAll('.q-act').forEach(function (btn) {
                 btn.addEventListener('click', function () {
                     var id = btn.closest('.fs-row').getAttribute('data-id');
@@ -826,6 +938,7 @@
             api('GET', 'Queue').then(function (d) {
                 renderStatus(d.status);
                 el('fsQueueCount').textContent = '(' + d.queue.length + ')';
+                renderQueueSeries(d.series);
                 renderItems(d.queue, 'queue', el('fsQueueList'));
                 el('fsProblemSection').classList.toggle('hide', d.problems.length === 0);
                 el('fsProblemCount').textContent = '(' + d.problems.length + ')';
@@ -837,6 +950,27 @@
             });
         }
 
+        // ⛔ STOP — stav v hlavičce na všech záložkách
+        function renderStop(stopped) {
+            el('fsStopBtn').querySelector('span').textContent = stopped ? '▶ Povolit Fastshare' : '⛔ STOP';
+            el('fsStopBtn').style.background = stopped ? '#2e7d32' : '#b71c1c';
+            el('fsStopBtn').setAttribute('data-stopped', stopped ? '1' : '0');
+            el('fsStopBanner').classList.toggle('hide', !stopped);
+        }
+        function refreshStop() { api('GET', 'Status').then(function (s) { renderStop(!!s.stopped); }); }
+        el('fsStopBtn').addEventListener('click', function () {
+            var stopped = el('fsStopBtn').getAttribute('data-stopped') === '1';
+            if (!stopped && !confirm('Zastavit veškeré stahování i hledání na Fastshare, dokud ho nepovolíš?')) return;
+            api('POST', 'Stop', { On: !stopped }).then(function (r) { renderStop(!!r.stopped); refreshQueue(); });
+        });
+        refreshStop();
+        if (window.__fsStopTimer) clearInterval(window.__fsStopTimer);
+        window.__fsStopTimer = setInterval(function () { if (document.body.contains(page)) refreshStop(); }, 15000);
+
+        el('fsForceBtn').addEventListener('click', function () {
+            var forced = el('fsForceBtn').getAttribute('data-forced') === '1';
+            api('POST', 'Worker/' + (forced ? 'unforce' : 'force')).then(refreshQueue, refreshQueue);
+        });
         el('fsPauseBtn').addEventListener('click', function () {
             var paused = el('fsPauseBtn').getAttribute('data-paused') === '1';
             api('POST', 'Worker/' + (paused ? 'resume' : 'pause')).then(refreshQueue, refreshQueue);

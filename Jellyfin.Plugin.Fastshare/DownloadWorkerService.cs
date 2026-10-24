@@ -87,6 +87,19 @@ public sealed class DownloadWorkerService : BackgroundService
         status.DailyBytes = _state.Queue.GetDailyBytes();
         status.Account = _state.Client.Account;
 
+        if (_state.Queue.FastshareStopped)
+        {
+            // ⛔ STOP — nic nestahovat; rozjeté přenosy zastaví už samo tlačítko, tohle je pojistka
+            if (_state.RunningCount > 0)
+            {
+                _state.CancelDownload();
+            }
+
+            status.NextActionUtc = null;
+            status.LastMessage = "⛔ STOP — Fastshare zastaven, nic se nestahuje ani nehledá (povol tlačítkem ▶ Povolit Fastshare)";
+            return IdlePoll;
+        }
+
         if (cfg == null || _state.Queue.WorkerPaused)
         {
             status.NextActionUtc = null;
@@ -100,7 +113,17 @@ public sealed class DownloadWorkerService : BackgroundService
 
         var slots = Math.Clamp(cfg.MaxParallelDownloads, 1, 8);
         var now = DateTime.Now;
-        var windowOpen = Schedule.IsOpen(
+
+        // „⚡ Stahovat teď": fronta jede mimo okno a denní strop; po vyprázdnění se samo vypne
+        var forced = _state.Queue.IgnoreWindow;
+        if (forced && _state.RunningCount == 0 && !_state.Queue.GetAll().Any(i => i.Status == QueueItemStatus.Queued))
+        {
+            _state.Queue.IgnoreWindow = false;
+            forced = false;
+            _logger.LogInformation("Fastshare: fronta prázdná — vynucené stahování mimo okno vypnuto");
+        }
+
+        var windowOpen = forced || Schedule.IsOpen(
             cfg.UseWeeklyWindow, cfg.WeeklyWindow, cfg.WindowFromHour, cfg.WindowToHour, 0, now, cfg.WindowExtraRanges);
 
         // Konec okna: volitelně zastavit i rozjetá stahování (bez „Stáhnout teď")
@@ -135,7 +158,7 @@ public sealed class DownloadWorkerService : BackgroundService
         }
 
         var outage = _state.OutageRemaining();
-        var dailyCapHit = cfg.DailyCapGb > 0
+        var dailyCapHit = !forced && cfg.DailyCapGb > 0
             && _state.Queue.GetDailyBytes() >= (long)cfg.DailyCapGb * 1024 * 1024 * 1024;
 
         var free = DownloadEngine.GetFreeSpace(cfg.MoviesPath);

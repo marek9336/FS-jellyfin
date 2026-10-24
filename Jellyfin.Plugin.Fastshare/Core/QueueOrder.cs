@@ -6,11 +6,27 @@ namespace Jellyfin.Plugin.Fastshare.Core;
 /// </summary>
 public static class QueueOrder
 {
-    /// <summary>Pořadí ve frontě: ⚡ přednost → ruční pořadí (▲▼ / přetažení) → čas zařazení.</summary>
-    public static IOrderedEnumerable<QueueItem> ByPriority(IEnumerable<QueueItem> items) =>
-        items.OrderByDescending(i => i.ForceNow)
-            .ThenBy(i => i.SortIndex)
+    /// <summary>
+    /// Pořadí ve frontě: ⚡ přednost → filmy před seriály → ruční pořadí (▲▼) a čas zařazení. Díly jednoho seriálu
+    /// drží pohromadě (seriál stojí tam, kde jeho nejdřív zařazený díl) a jdou S01E01 → …
+    /// </summary>
+    public static IOrderedEnumerable<QueueItem> ByPriority(IEnumerable<QueueItem> items)
+    {
+        var list = items as IReadOnlyCollection<QueueItem> ?? items.ToList();
+        var rank = list.Where(i => i.MediaType == MediaKind.Episode)
+            .GroupBy(i => (i.ForceNow, Key: SeriesKey(i)!))
+            .ToDictionary(g => g.Key, g => g.Min(i => (i.SortIndex, i.AddedUtc)));
+        (long SortIndex, DateTime AddedUtc) R(QueueItem i) =>
+            i.MediaType == MediaKind.Episode ? rank[(i.ForceNow, SeriesKey(i)!)] : (i.SortIndex, i.AddedUtc);
+        return list.OrderByDescending(i => i.ForceNow)
+            .ThenBy(i => i.MediaType == MediaKind.Episode ? 1 : 0)
+            .ThenBy(i => R(i).SortIndex)
+            .ThenBy(i => R(i).AddedUtc)
+            .ThenBy(i => SeriesKey(i) ?? string.Empty, StringComparer.Ordinal)
+            .ThenBy(i => i.Season ?? 0)
+            .ThenBy(i => i.Episode ?? 0)
             .ThenBy(i => i.AddedUtc);
+    }
 
     /// <summary>
     /// Která z čekajících položek jde na řadu. Když je na řadě epizoda, vezme se
