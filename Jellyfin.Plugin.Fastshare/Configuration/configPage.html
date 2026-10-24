@@ -127,7 +127,7 @@
                 <div id="fsQueueSeries"></div>
                 <div id="fsQueueSel" class="fs-card hide" style="position:sticky; top:0; z-index:5; display:flex; gap:.4em; flex-wrap:wrap; align-items:center;"></div>
                 <div class="fieldDescription" style="margin:-.3em 0 .5em;">Klepnutím na řádek vybereš položku (Ctrl / další klepnutí přidá, Shift vybere rozsah),
-                    klepnutím na hlavičku seriálu celý seriál. Filmy jdou před seriály, seriál s ⚡ před vším.</div>
+                    klepnutím na hlavičku seriálu celý seriál. Pořadí: ⚡ (hned, i mimo okno) → ⏫ upřednostněný seriál → filmy → ostatní seriály.</div>
                 <div id="fsQueueList"></div>
 
                 <div id="fsProblemSection" class="hide">
@@ -846,10 +846,19 @@
                 if (x.upgrading) parts.push('🔼 vylepšuje se ' + x.upgrading + ' ' + (x.upgrading === 1 ? 'díl' : x.upgrading < 5 ? 'díly' : 'dílů') + ' na ' + esc(x.quality));
                 if (x.missing) parts.push('❓ ' + x.missing + ' chybějících');
                 var other = x.total - x.upgrading - x.missing;
-                if (other > 0) parts.push(other + ' dalších');
-                return '<div class="fs-sub" style="opacity:1;">' + (x.forced ? '⚡ ' : '') + '<strong>' + esc(x.name) + '</strong> — ' + parts.join(', ')
-                    + (x.downloading ? ' · ⬇️ právě se stahuje ' + x.downloading : '') + '</div>';
+                if (other > 0) parts.push(other + (x.upgrading || x.missing ? (other === 1 ? ' další' : ' dalších') : (other === 1 ? ' díl' : other < 5 ? ' díly' : ' dílů')));
+                return '<div class="fs-sub" style="opacity:1; display:flex; gap:.6em; align-items:center; justify-content:space-between; flex-wrap:wrap;"><span>'
+                    + (x.forced ? '⚡ ' : '') + (x.boosted ? '⏫ ' : '') + '<strong>' + esc(x.name) + '</strong> — ' + parts.join(', ')
+                    + (x.downloading ? ' · ⬇️ právě se stahuje ' + x.downloading : '') + '</span>'
+                    + '<button is="emby-button" type="button" class="raised fs-btn q-boost" data-name="' + esc(x.name) + '" data-on="' + (x.boosted ? '0' : '1') + '" title="'
+                    + (x.boosted ? 'Vrátit do běžného pořadí' : 'Seriál, na který se právě díváš: díly před filmy i ostatními seriály (v časovém okně), i nové díly z hlídače') + '">'
+                    + (x.boosted ? '⏬ Zrušit přednost' : '⏫ Upřednostnit') + '</button></div>';
             }).join('') + '</div>';
+            box.querySelectorAll('.q-boost').forEach(function (b) {
+                b.addEventListener('click', function () {
+                    api('POST', 'Queue/BoostSeries', { SeriesTitle: b.getAttribute('data-name'), On: b.getAttribute('data-on') === '1' }).then(refreshQueue, refreshQueue);
+                });
+            });
         }
 
         function renderItems(list, kind, target) {
@@ -865,7 +874,7 @@
                     if (key !== lastKey) {
                         var cnt = list.filter(function (x) { return x.status !== 'Downloading' && seriesKeyOf(x) === key; }).length;
                         html += '<div class="fs-qhead" data-key="' + esc(key || '') + '" title="' + (key ? 'Vybrat celý seriál' : 'Vybrat všechny filmy') + '">'
-                            + (key ? '📺 ' + esc(i.seriesTitle || i.title) : '🎬 Filmy') + ' <span style="opacity:.6; font-weight:normal;">(' + cnt + ')</span></div>';
+                            + (key ? (i.boost ? '⏫ ' : '') + '📺 ' + esc(i.seriesTitle || i.title) : '🎬 Filmy') + ' <span style="opacity:.6; font-weight:normal;">(' + cnt + ')</span></div>';
                         lastKey = key;
                     }
                 }

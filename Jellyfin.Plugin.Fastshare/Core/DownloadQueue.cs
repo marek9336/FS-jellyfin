@@ -74,6 +74,39 @@ public sealed class DownloadQueue
         set { lock (_lock) { _state.WorkerPaused = value; SaveLocked(); } }
     }
 
+    /// <summary>⏫ Upřednostnit / zrušit seriál. Vrací počet dílů ve frontě, kterých se to týká.</summary>
+    public int BoostSeries(string seriesKey, bool on)
+    {
+        lock (_lock)
+        {
+            var ticks = on ? DateTime.UtcNow.Ticks : 0;
+            if (on)
+            {
+                _state.BoostedSeries[seriesKey] = ticks;
+            }
+            else
+            {
+                _state.BoostedSeries.Remove(seriesKey);
+            }
+
+            var n = 0;
+            foreach (var i in _state.Items.Where(i => QueueOrder.SeriesKey(i) == seriesKey))
+            {
+                i.Boost = ticks;
+                n++;
+            }
+
+            SaveLocked();
+            _log($"queue: seriál \"{seriesKey}\" {(on ? "upřednostněn" : "už není upřednostněn")} ({n} položek)");
+            return n;
+        }
+    }
+
+    public HashSet<string> BoostedSeries
+    {
+        get { lock (_lock) { return _state.BoostedSeries.Keys.ToHashSet(StringComparer.Ordinal); } }
+    }
+
     public bool FastshareStopped
     {
         get { lock (_lock) { return _state.FastshareStopped; } }
@@ -558,6 +591,11 @@ public sealed class DownloadQueue
             }
 
             item.SortIndex = sortIndex;
+            if (QueueOrder.SeriesKey(item) is { } sk && _state.BoostedSeries.TryGetValue(sk, out var boost))
+            {
+                item.Boost = boost; // nový díl upřednostněného seriálu (hlídač) jde k ostatním
+            }
+
             _state.Items.Add(item);
             SaveLocked();
             _log($"queue: přidáno \"{item.Title}\" ({item.Quality})");

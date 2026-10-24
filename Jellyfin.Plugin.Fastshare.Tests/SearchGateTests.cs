@@ -66,7 +66,11 @@ public sealed class QueueOrderTests
         var order = QueueOrder.ByPriority(items).Select(i => i.MediaType == MediaKind.Movie ? i.Title : $"{i.Title} {i.Episode}").ToList();
         Assert.Equal(["Pelíšky", "Kytice", "Dexter 1", "Dexter 2", "Mentalista 1", "Mentalista 2"], order);
 
-        // ⚡ u seriálu → před filmy
+        // ⏫ upřednostněný seriál → před filmy, ale za ⚡
+        foreach (var i in items.Where(i => i.Title == "Mentalista")) i.Boost = 5;
+        order = QueueOrder.ByPriority(items).Select(i => i.MediaType == MediaKind.Movie ? i.Title : $"{i.Title} {i.Episode}").ToList();
+        Assert.Equal(["Mentalista 1", "Mentalista 2", "Pelíšky", "Kytice", "Dexter 1", "Dexter 2"], order);
+
         items.Add(Ep("Černobyl", 1, 1, 7, force: true));
         Assert.Equal("Černobyl", QueueOrder.ByPriority(items).First().Title);
     }

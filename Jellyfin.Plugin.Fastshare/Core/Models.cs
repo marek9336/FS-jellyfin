@@ -181,6 +181,9 @@ public class QueueItem
     /// <summary>Ruční pořadí ve frontě (nižší = dřív).</summary>
     public long SortIndex { get; set; }
 
+    /// <summary>⏫ Upřednostněný seriál (čas upřednostnění, 0 = ne): před filmy i ostatními seriály, ale v okně.</summary>
+    public long Boost { get; set; }
+
     /// <summary>„Stáhnout znovu": nepřeskakovat kvůli existujícímu souboru a přepsat ho.</summary>
     public bool Overwrite { get; set; }
 
@@ -309,6 +312,9 @@ public class PluginState
 
     /// <summary>⛔ STOP: žádné spojení na Fastshare (stahování, hledání, přihlášení), dokud ho uživatel nepovolí.</summary>
     public bool FastshareStopped { get; set; }
+
+    /// <summary>⏫ Upřednostněné seriály (klíč seriálu → čas upřednostnění); nové díly přebírají přednost.</summary>
+    public Dictionary<string, long> BoostedSeries { get; set; } = new();
 
     /// <summary>Klouzavý průměr rychlosti stahování (B/s).</summary>
     public long AvgSpeedBps { get; set; }

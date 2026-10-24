@@ -7,7 +7,7 @@ namespace Jellyfin.Plugin.Fastshare.Core;
 public static class QueueOrder
 {
     /// <summary>
-    /// Pořadí ve frontě: ⚡ přednost → filmy před seriály → ruční pořadí (▲▼) a čas zařazení. Díly jednoho seriálu
+    /// Pořadí ve frontě: ⚡ přednost → ⏫ upřednostněné seriály → filmy před seriály → ruční pořadí (▲▼) a čas zařazení. Díly jednoho seriálu
     /// drží pohromadě (seriál stojí tam, kde jeho nejdřív zařazený díl) a jdou S01E01 → …
     /// </summary>
     public static IOrderedEnumerable<QueueItem> ByPriority(IEnumerable<QueueItem> items)
@@ -19,6 +19,7 @@ public static class QueueOrder
         (long SortIndex, DateTime AddedUtc) R(QueueItem i) =>
             i.MediaType == MediaKind.Episode ? rank[(i.ForceNow, SeriesKey(i)!)] : (i.SortIndex, i.AddedUtc);
         return list.OrderByDescending(i => i.ForceNow)
+            .ThenByDescending(i => i.Boost) // ⏫ upřednostněný seriál (naposledy upřednostněný první)
             .ThenBy(i => i.MediaType == MediaKind.Episode ? 1 : 0)
             .ThenBy(i => R(i).SortIndex)
             .ThenBy(i => R(i).AddedUtc)

@@ -427,6 +427,7 @@ public class FsController : ControllerBase
             .OrderBy(i => i.Status == QueueItemStatus.Downloading ? 0 : 1)
             .ToList();
         // Seriály ve frontě: kolik dílů se vylepšuje (náhrada horší verze z Navržených), kolik chybějících
+        var boosted = _state.Queue.BoostedSeries;
         var series = ordered.Where(i => i.MediaType == MediaKind.Episode)
             .GroupBy(i => QueueOrder.SeriesKey(i)!)
             .Select(g => new
@@ -438,6 +439,7 @@ public class FsController : ControllerBase
                 downloading = g.Count(i => i.Status == QueueItemStatus.Downloading),
                 quality = g.GroupBy(i => i.Quality ?? "?").OrderByDescending(q => q.Count()).First().Key,
                 forced = g.Any(i => i.ForceNow),
+                boosted = boosted.Contains(g.Key),
             })
             .ToList();
         return Ok(new
@@ -470,6 +472,7 @@ public class FsController : ControllerBase
             status = i.Status.ToString(),
             error = i.ErrorMessage,
             forceNow = i.ForceNow,
+            boost = i.Boost > 0,
             fromWatcher = i.FromWatcher,
             failCount = i.FailCount,
             stoppedPercent = i.StoppedPercent,
@@ -624,6 +627,36 @@ public class FsController : ControllerBase
             default:
                 return BadRequest(new { success = false, message = "Neznámá akce." });
         }
+    }
+
+    public sealed class BoostRequest
+    {
+        public string SeriesTitle { get; set; } = string.Empty;
+
+        public bool On { get; set; } = true;
+    }
+
+    /// <summary>
+    /// ⏫ Upřednostnit seriál (ten, na který se právě kouká): jeho díly jdou před filmy i ostatní seriály, v časovém
+    /// okně (na rozdíl od ⚡). Platí i pro díly, které hlídač přidá později, dokud se nezruší.
+    /// </summary>
+    [HttpPost("Queue/BoostSeries")]
+    public ActionResult BoostSeries([FromBody] BoostRequest r)
+    {
+        if (string.IsNullOrWhiteSpace(r.SeriesTitle))
+        {
+            return BadRequest(new { success = false, message = "Chybí seriál." });
+        }
+
+        var n = _state.Queue.BoostSeries(QueueOrder.SeriesKey(r.SeriesTitle), r.On);
+        _state.Queue.Wake();
+        return Ok(new
+        {
+            success = true,
+            message = r.On
+                ? $"⏫ {r.SeriesTitle} má přednost před filmy i ostatními seriály ({n} {(n == 1 ? "díl" : n is > 1 and < 5 ? "díly" : "dílů")} ve frontě, nové díly ji dostanou taky). Stahuje se v časovém okně — hned jen s ⚡."
+                : $"{r.SeriesTitle} už není upřednostněný.",
+        });
     }
 
     [HttpPost("Queue/GroupSeries")]

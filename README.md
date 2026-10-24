@@ -16,6 +16,8 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   (klepnutí / Ctrl, Shift rozsah, hlavička seriálu = celý seriál) a hromadně ⚡, nahoru, na konec, odebrat; nahoře
   přehled seriálů ve frontě (kolik dílů se vylepšuje na vyšší kvalitu, kolik chybějících). „⚡ Stahovat teď (mimo
   okno)" pustí celou frontu hned, po vyprázdnění se vrátí běžné okno.
+  ⏫ *Upřednostnit seriál* (na který se právě díváš): díly před filmy i ostatními seriály, v časovém okně; přednost
+  dostanou i díly, které hlídač přidá později.
 - **Časová okna** — od–do, další okna („22-3,12-13") nebo rozvrh po dnech; volitelně přerušit rozjeté
   soubory na konci okna. „⚡ Stáhnout teď" okna obchází.
 - **Volitelné limity**: společný limit rychlosti všech stahování, denní strop, minimální volné místo,
