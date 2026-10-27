@@ -343,6 +343,7 @@ public sealed class LibraryAdvisor : BackgroundService
         // Duplicity, filmy bez metadat a díly jsou hotové hned — uložit, ať jsou v GUI, i když
         // hledání lepších verzí poběží ještě dny
         _state.Suggestions.Merge(found, new[] { "identify", "duplicate", "episode", "missing", "misplaced", "tomovies" });
+        ResolveQueued();
 
         // Pořadí: duplicity filmů → díly seriálů → lepší verze filmů; v rámci skupiny nejdéle nehledané
         var recheck = TimeSpan.FromDays(Math.Max(1, cfg.SuggestRecheckDays));
@@ -437,6 +438,7 @@ public sealed class LibraryAdvisor : BackgroundService
         _state.Suggestions.Merge(found, complete
             ? new[] { "identify", "duplicate", "episode", "missing", "misplaced", "tomovies", "upgrade" }
             : new[] { "identify", "duplicate", "episode", "missing", "misplaced", "tomovies" });
+        ResolveQueued();
         Status.Phase = null;
         var summary = string.Create(
             CultureInfo.InvariantCulture,
@@ -685,6 +687,35 @@ public sealed class LibraryAdvisor : BackgroundService
         _state.Suggestions.Series = summaries.OrderBy(x => x.Name, StringComparer.CurrentCulture).ToList();
         _seriesItems = summaries;
         return jobs;
+    }
+
+    /// <summary>
+    /// Návrhy, jejichž nalezený soubor už čeká ve frontě, stahuje se nebo je stažený (dřívější kliknutí, hlídač):
+    /// vyřídit, ať v Navržených nepřekáží. Fronta se připojí k návrhu (po stažení ho označí sama).
+    /// </summary>
+    private void ResolveQueued()
+    {
+        var queue = _state.Queue.GetAll()
+            .Where(q => !string.IsNullOrEmpty(q.FileId) && q.Status is QueueItemStatus.Queued or QueueItemStatus.Downloading or QueueItemStatus.Done)
+            .GroupBy(q => q.FileId)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        foreach (var s in _state.Suggestions.GetAll().Where(s => s.Status == "new" && s.Candidate != null && queue.ContainsKey(s.Candidate.FileId)))
+        {
+            var q = queue[s.Candidate!.FileId];
+            if (q.Status != QueueItemStatus.Done && q.SuggestionId == null)
+            {
+                _state.Queue.Update(q.Id, x => x.SuggestionId = s.Id);
+            }
+
+            _state.Suggestions.Update(s.Id, x =>
+            {
+                x.Status = "done";
+                x.DecidedUtc = DateTime.UtcNow;
+                x.Note = q.Status == QueueItemStatus.Done
+                    ? "Už staženo → " + (q.TargetPath ?? q.FileName)
+                    : "Už je ve frontě (" + (q.Status == QueueItemStatus.Downloading ? "stahuje se" : "čeká") + ")";
+            });
+        }
     }
 
     private readonly Dictionary<string, List<(Episode Ep, List<LibraryVersion> Versions)>> _seriesEps = new();

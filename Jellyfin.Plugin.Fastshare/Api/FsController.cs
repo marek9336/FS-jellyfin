@@ -742,6 +742,15 @@ public class FsController : ControllerBase
                 lastResult = st.LastResult ?? last.LastResult,
             },
             series = _state.Suggestions.Series,
+            // kandidáti návrhů, kteří už jsou ve frontě / stažení: FileId → stav
+            inQueue = _state.Queue.GetAll()
+                .Where(q => !string.IsNullOrEmpty(q.FileId) && q.Status is QueueItemStatus.Queued or QueueItemStatus.Downloading or QueueItemStatus.Done)
+                .GroupBy(q => q.FileId)
+                .ToDictionary(g => g.Key, g => new
+                {
+                    status = g.First().Status.ToString(),
+                    percent = g.First().BytesTotal > 0 ? (int)(g.First().BytesDone * 100 / g.First().BytesTotal) : 0,
+                }),
             fileOps = new { items = _state.FileOps("sug:"), series = _state.FileOps("ser:") },
             items = _state.Suggestions.GetAll()
                 .OrderBy(x => x.Status == "new" ? 0 : 1)
@@ -826,6 +835,41 @@ public class FsController : ControllerBase
         _state.Queue.Wake();
         if (outcome != AddOutcome.Added)
         {
+            // Už ve frontě (dřívější kliknutí, hlídač) → připojit k ní tenhle návrh, ať se po stažení
+            // staré verze smažou (nahradit) a návrh se vyřídí
+            var dup = _state.Queue.FindDuplicate(item);
+            if (dup is { Status: QueueItemStatus.Queued or QueueItemStatus.Downloading })
+            {
+                _state.Queue.Update(dup.Id, q =>
+                {
+                    q.SuggestionId ??= s.Id;
+                    if (r.Replace)
+                    {
+                        q.ReplacePaths = (q.ReplacePaths ?? new List<string>()).Union(s.Versions.Select(v => v.Path)).ToList();
+                    }
+                });
+                _state.Suggestions.Update(id, x =>
+                {
+                    x.Status = "done";
+                    x.DecidedUtc = DateTime.UtcNow;
+                    x.Note = "Už bylo ve frontě — připojeno" + (r.Replace ? ", staré verze se smažou po stažení" : string.Empty);
+                });
+                var where = dup.Status == QueueItemStatus.Downloading ? "právě se stahuje" : "čeká ve frontě";
+                return Ok(new { success = true, message = $"„{dup.FileName}“ už {where} — připojeno k návrhu" + (r.Replace ? ", staré verze se po stažení smažou." : ".") });
+            }
+
+            if (dup is { Status: QueueItemStatus.Done })
+            {
+                _state.Suggestions.Update(id, x =>
+                {
+                    x.Status = "done";
+                    x.DecidedUtc = DateTime.UtcNow;
+                    x.Note = "Už staženo " + dup.CompletedUtc?.ToLocalTime().ToString("d. M. H:mm", System.Globalization.CultureInfo.InvariantCulture) + " → " + (dup.TargetPath ?? dup.FileName);
+                });
+                QueueScan();
+                return Ok(new { success = true, message = $"Tenhle soubor už je stažený ({dup.TargetPath ?? dup.FileName}). Návrh vyřízen; až Jellyfin knihovnu načte, ukáže se film ve víc verzích v Duplicitách — horší tam smažeš." });
+            }
+
             return Ok(new { success = false, message = "Tenhle soubor už ve frontě je." });
         }
 
@@ -948,6 +992,82 @@ public class FsController : ControllerBase
             }
         });
         return Ok(new { success = true, background = true, message = text });
+    }
+
+    /// <summary>
+    /// 🔀 Jiné verze k návrhu: ruční hledání na Fastshare (1 stránka na název, jako hledání v GUI — mimo strop),
+    /// seřazené podle preferencí, s velikostí a délkou proti dnešnímu souboru. Výběr pak „Vybrat" (SetCandidate).
+    /// </summary>
+    [HttpPost("Suggestions/{id}/Alternatives")]
+    public async Task<ActionResult> Alternatives([FromRoute] string id, CancellationToken ct)
+    {
+        var s = _state.Suggestions.Get(id);
+        if (s == null)
+        {
+            return NotFound(new { success = false, message = "Návrh neexistuje." });
+        }
+
+        var episode = s.Kind is "episode" or "missing";
+        var cfg = Plugin.Instance!.Configuration;
+        var target = s.TargetQuality ?? cfg.SuggestTargetQuality;
+        var opts = FsState.SelectorOptions(target);
+        var titles = new[] { episode ? s.SeriesName ?? s.Title : s.Title, s.OriginalTitle }
+            .Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var all = new List<RankedFile>();
+        foreach (var title in titles)
+        {
+            var t = new SelectTarget { Kind = episode ? MediaKind.Episode : MediaKind.Movie, Title = title!, Year = episode ? null : s.Year, Season = s.Season, Episode = s.Episode };
+            var files = await _state.Client.SearchAllAsync(t.SearchTerm(), cfg.ShowAdult, 1, ct).ConfigureAwait(false);
+            all.AddRange(FileSelector.Rank(files, t, opts));
+        }
+
+        var current = s.Versions.Count > 0 ? s.Versions.Max(v => v.SizeBytes) : 0;
+        var currentDur = s.Versions.Select(v => v.DurationSec).FirstOrDefault(d => d is > 0);
+        var queued = _state.Queue.GetAll().Where(q => q.Status is QueueItemStatus.Queued or QueueItemStatus.Downloading or QueueItemStatus.Done)
+            .Select(q => q.FileId).ToHashSet(StringComparer.Ordinal);
+        var list = all.GroupBy(x => x.File.Id).Select(g => g.OrderByDescending(x => x.Score).First())
+            .OrderByDescending(x => LibraryFiles.Level(x.File.Quality)).ThenByDescending(x => x.Score)
+            .Take(25)
+            .Select(x => new
+            {
+                fileId = x.File.Id,
+                fileName = x.File.FileName,
+                downloadUrl = x.File.DownloadUrl,
+                sizeBytes = x.File.SizeBytes,
+                durationSec = x.File.DurationSec,
+                quality = x.File.Quality,
+                language = string.IsNullOrEmpty(x.File.LanguageLabel) ? null : x.File.LanguageLabel,
+                reason = x.Reason,
+                smaller = current > 0 && x.File.SizeBytes > 0 && x.File.SizeBytes < current,
+                lengthDiffMin = currentDur is > 0 && x.File.DurationSec is > 0 ? (x.File.DurationSec.Value - currentDur.Value) / 60 : (int?)null,
+                current = s.Candidate?.FileId == x.File.Id,
+                inQueue = queued.Contains(x.File.Id),
+            })
+            .ToList();
+        return Ok(new { success = true, currentBytes = current, currentDurationSec = currentDur, items = list, message = list.Count == 0 ? "Žádná jiná verze nenalezena." : $"Nalezeno {list.Count} verzí." });
+    }
+
+    /// <summary>Vybrat jinou verzi jako kandidáta návrhu (z Jiné verze).</summary>
+    [HttpPost("Suggestions/{id}/SetCandidate")]
+    public ActionResult SetCandidate([FromRoute] string id, [FromBody] SuggestedFile c)
+    {
+        if (string.IsNullOrWhiteSpace(c.FileId) || !Uri.TryCreate(c.DownloadUrl, UriKind.Absolute, out var u)
+            || u.Scheme != "https" || !u.Host.Contains("fastshare", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new { success = false, message = "Odkaz nevede na Fastshare." });
+        }
+
+        if (_state.Suggestions.Get(id) == null)
+        {
+            return NotFound(new { success = false, message = "Návrh neexistuje." });
+        }
+
+        _state.Suggestions.Update(id, x =>
+        {
+            x.Candidate = c;
+            x.Status = "new";
+        });
+        return Ok(new { success = true, message = $"Vybráno: {c.FileName} — teď můžeš dát ⬇️ Stáhnout." });
     }
 
     public sealed class EpisodeTarget

@@ -544,6 +544,24 @@ public sealed class DownloadQueue
     /// <paramref name="groupRank"/> (z Hlídače): pořadí hlídaných titulů — položka se pak
     /// zařadí před díly hlídaných s nižší prioritou, ne až na konec fronty.
     /// </summary>
+    /// <summary>
+    /// Položka, kvůli které by `item` neprošel jako duplicita (stejný soubor Fastshare, nebo stejný film/díl
+    /// ve stejné kvalitě, který čeká / se stahuje). Kopie, nebo null.
+    /// </summary>
+    public QueueItem? FindDuplicate(QueueItem item)
+    {
+        lock (_lock)
+        {
+            var media = Dedup.MediaKey(item);
+            var quality = Dedup.NormQuality(item.Quality);
+            var hit = _state.Items.FirstOrDefault(i => !string.IsNullOrEmpty(item.FileId) && i.FileId == item.FileId
+                          && i.Status is QueueItemStatus.Queued or QueueItemStatus.Downloading or QueueItemStatus.Done)
+                      ?? _state.Items.FirstOrDefault(i => !i.IsArchive && i.Status is QueueItemStatus.Queued or QueueItemStatus.Downloading
+                          && Dedup.MediaKey(i) == media && Dedup.NormQuality(i.Quality) == quality);
+            return hit == null ? null : Clone(hit);
+        }
+    }
+
     public AddOutcome Add(QueueItem item, IReadOnlyDictionary<string, int>? groupRank = null)
     {
         lock (_lock)

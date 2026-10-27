@@ -1121,13 +1121,79 @@
                 + fix;
         }
 
-        function candLine(c) {
+        /// Délka nalezeného souboru proti dnešní verzi: rozdíl nad 5 min = jiná (zkrácená / prodloužená) verze
+        function lengthWarn(c, x) {
+            var cur = x && x.Versions && x.Versions.length ? x.Versions[0].DurationSec : null;
+            if (!c || !c.DurationSec || !cur) return '';
+            var d = Math.round((c.DurationSec - cur) / 60);
+            if (Math.abs(d) <= 5) return '';
+            return '<div class="fs-sub" style="opacity:1; color:#ffb74d; font-weight:600;">⚠️ ⏱ o ' + Math.abs(d) + ' min ' + (d < 0 ? 'kratší' : 'delší')
+                + ' než tvoje verze (' + fmtDuration(c.DurationSec) + ' × ' + fmtDuration(cur) + ') — ' + (d < 0 ? 'možná zkrácená nebo jiná verze' : 'možná prodloužená verze') + '</div>';
+        }
+
+        function queueBadge(c) {
+            var q = c && sugData && sugData.inQueue ? sugData.inQueue[c.FileId] : null;
+            if (!q) return '';
+            return q.status === 'Done' ? '<span class="fs-badge fs-b-cz">✅ už staženo</span>'
+                : q.status === 'Downloading' ? '<span class="fs-badge fs-b-cz">⬇️ stahuje se ' + q.percent + ' %</span>'
+                : '<span class="fs-badge fs-b-cz">⏳ už ve frontě</span>';
+        }
+
+        function candLine(c, x) {
             if (!c) return '<div class="fs-sub">🔍 Lepší verze na Fastshare zatím nenalezena.</div>';
             return '<div class="fs-sub" style="opacity:1;">➡️ <strong>' + esc(c.FileName) + '</strong><br>'
                 + '<span class="fs-badge fs-b-q">' + esc(c.Quality || '?') + '</span>'
                 + (c.Language ? '<span class="fs-badge fs-b-cz">' + esc(c.Language) + '</span>' : '<span class="fs-badge fs-b-unk">jazyk neuveden</span>')
                 + '<span class="fs-badge">' + fmtBytes(c.SizeBytes) + '</span>'
-                + (c.DurationSec ? '<span class="fs-badge">' + fmtDuration(c.DurationSec) + '</span>' : '') + '</div>';
+                + (c.DurationSec ? '<span class="fs-badge">' + fmtDuration(c.DurationSec) + '</span>' : '') + queueBadge(c) + '</div>'
+                + lengthWarn(c, x);
+        }
+
+        // 🔀 Jiné verze: jedno ruční hledání na Fastshare, výběr jiného souboru jako kandidáta
+        function showAlternatives(row, x) {
+            var box = row.querySelector('.s-alts');
+            if (!box) { row.querySelector('.fs-main').insertAdjacentHTML('beforeend', '<div class="s-alts"></div>'); box = row.querySelector('.s-alts'); }
+            box.innerHTML = '<div class="fs-msg">Hledám jiné verze na Fastshare…</div>';
+            api('POST', 'Suggestions/' + encodeURIComponent(x.Id) + '/Alternatives').then(function (r) {
+                var base = r.items || [], items = base.slice(), onlySmall = false, sortSmall = false;
+                if (!base.length) { box.innerHTML = '<div class="fs-msg">Žádná jiná verze nenalezena.</div>'; return; }
+                function draw() {
+                    items = base.slice();
+                    if (sortSmall) items.sort(function (p, q) { return p.sizeBytes - q.sizeBytes; });
+                    var list = items.filter(function (a) { return !onlySmall || a.smaller; });
+                    box.innerHTML = '<div class="fs-card" style="background:#151515; margin-top:.4em;">'
+                        + '<div style="display:flex; gap:.8em; align-items:center; flex-wrap:wrap;"><strong>🔀 Jiné verze (' + base.length + ')</strong>'
+                        + (r.currentBytes ? '<span style="opacity:.7;">tvůj soubor ' + fmtBytes(r.currentBytes) + (r.currentDurationSec ? ' · ' + fmtDuration(r.currentDurationSec) : '') + '</span>' : '')
+                        + '<label style="display:flex; align-items:center; gap:.3em;"><input type="checkbox" class="s-onlysmall"' + (onlySmall ? ' checked' : '') + '> jen menší než můj soubor</label>'
+                        + '<label style="display:flex; align-items:center; gap:.3em;"><input type="checkbox" class="s-sortsmall"' + (sortSmall ? ' checked' : '') + '> nejmenší první</label></div>'
+                        + (list.length ? '' : '<div class="fs-msg">Žádná menší verze.</div>')
+                        + list.map(function (a) {
+                            var i = base.indexOf(a);
+                            var lenBad = a.lengthDiffMin != null && Math.abs(a.lengthDiffMin) > 5;
+                            return '<div class="fs-sub" style="opacity:1; display:flex; gap:.5em; align-items:center; justify-content:space-between; flex-wrap:wrap; border-top:1px solid #222; padding-top:.3em;">'
+                                + '<span>' + (a.current ? '⭐ ' : '') + esc(a.fileName) + '<br>'
+                                + '<span class="fs-badge fs-b-q">' + esc(a.quality || '?') + '</span>'
+                                + (a.language ? '<span class="fs-badge fs-b-cz">' + esc(a.language) + '</span>' : '')
+                                + '<span class="fs-badge"' + (a.smaller ? ' style="background:#1b5e20;"' : '') + '>' + fmtBytes(a.sizeBytes) + (a.smaller ? ' ↓ menší' : '') + '</span>'
+                                + (a.durationSec ? '<span class="fs-badge"' + (lenBad ? ' style="background:#e65100;"' : '') + '>' + fmtDuration(a.durationSec)
+                                    + (lenBad ? ' (' + (a.lengthDiffMin > 0 ? '+' : '') + a.lengthDiffMin + ' min)' : '') + '</span>' : '')
+                                + (a.inQueue ? '<span class="fs-badge fs-b-cz">⏳ už ve frontě / staženo</span>' : '') + '</span>'
+                                + (a.current ? '<span style="opacity:.6;">vybraný</span>' : '<button is="emby-button" type="button" class="raised fs-btn s-altpick" data-i="' + i + '">Vybrat</button>') + '</div>';
+                        }).join('') + '</div>';
+                    box.querySelector('.s-onlysmall').addEventListener('change', function (e) { onlySmall = e.target.checked; draw(); });
+                    box.querySelector('.s-sortsmall').addEventListener('change', function (e) { sortSmall = e.target.checked; draw(); });
+                    box.querySelectorAll('.s-altpick').forEach(function (b) {
+                        b.addEventListener('click', function () {
+                            var a = base[parseInt(b.getAttribute('data-i'), 10)];
+                            api('POST', 'Suggestions/' + encodeURIComponent(x.Id) + '/SetCandidate', {
+                                FileId: a.fileId, FileName: a.fileName, DownloadUrl: a.downloadUrl, SizeBytes: a.sizeBytes,
+                                DurationSec: a.durationSec, Quality: a.quality, Language: a.language, Reason: a.reason
+                            }).then(function () { loadSuggest(false); });
+                        });
+                    });
+                }
+                draw();
+            }, function (xhr) { box.innerHTML = '<div class="fs-msg">❌ ' + esc(errMsg(xhr, 'Hledání selhalo.')) + '</div>'; });
         }
 
         function renderSugStatus() {
@@ -1216,8 +1282,9 @@
                     + (x.EpisodeName ? ' <span style="font-weight:normal;">— ' + esc(x.EpisodeName) + '</span>' : '')
                     + (x.PremiereDate ? ' <span style="opacity:.6; font-weight:normal;">· ' + new Date(x.PremiereDate).toLocaleDateString('cs-CZ') + '</span>' : '') + '</div>';
                 body = '<div class="fs-sub">chybí v knihovně' + (x.TargetDir ? ' · uloží se do ' + esc(x.TargetDir) : '') + '</div>'
-                    + (x.Candidate ? candLine(x.Candidate) : '<div class="fs-sub">🔍 Na Fastshare zatím nenalezen (nebo na něj hledání ještě nedošlo).</div>');
+                    + (x.Candidate ? candLine(x.Candidate, x) : '<div class="fs-sub">🔍 Na Fastshare zatím nenalezen (nebo na něj hledání ještě nedošlo).</div>');
                 actions = (x.Candidate ? '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="download">⬇️ Stáhnout ' + esc(x.Candidate.Quality || '') + '</button>' : '')
+                    + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="alts" title="Najít na Fastshare jiné verze dílu a vybrat jinou (menší, jiný jazyk…)">🔀 Jiné verze</button>'
                     + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="Tenhle díl nechci">✋ Nechci</button>';
                 return '<div class="fs-row" data-id="' + esc(x.Id) + '"><div class="fs-main">' + head + body + '<div class="s-msg fs-msg"></div></div>'
                     + '<div style="display:flex; gap:.3em; flex-wrap:wrap; align-items:center;">' + actions + '</div></div>';
@@ -1238,12 +1305,14 @@
                 body = x.Versions.map(function (v, i) { return verRow(x, v, i, multi); }).join('')
                     + (multi ? '<div class="fs-sub">💾 smazáním horších verzí se uvolní <strong>' + fmtBytes(savings(x)) + '</strong></div>' : '');
                 var tgt = x.TargetQuality || (cfgCache && cfgCache.SuggestTargetQuality) || '1080p';
-                if (x.Candidate || (x.Versions[0] && qLevel(x.Versions[0].Quality) < qLevel(tgt))) body += candLine(x.Candidate) + gainLine(x);
+                var below = x.Versions[0] && qLevel(x.Versions[0].Quality) < qLevel(tgt);
+                if (x.Candidate || below) body += candLine(x.Candidate, x) + gainLine(x);
                 if (multi) actions += '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="deleteVersions" title="Smaže zaškrtnuté verze, ostatní zůstanou">🗑 Smazat označené</button>';
                 if (x.Candidate) {
                     actions += '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;" title="Po úspěšném stažení smazat všechny dosavadní verze"><input type="checkbox" class="s-replace" checked> nahradit</label>'
                         + '<button is="emby-button" type="button" class="raised' + (multi ? '' : ' button-submit') + ' fs-btn s-act" data-act="download">⬇️ Stáhnout ' + esc(x.Candidate.Quality || '') + '</button>';
                 }
+                if (x.Candidate || below) actions += '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="alts" title="Najít na Fastshare jiné verze a vybrat jinou (menší, jiná délka, jiný jazyk…) — jedno ruční hledání">🔀 Jiné verze</button>';
                 actions += '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="' + (multi ? 'Nechat všechny verze' : 'Kvalita mi stačí — nenavrhovat') + '">✋ ' + (multi ? 'Nechat' : 'Stačí') + '</button>';
                 if (x.Kind !== 'episode') actions += '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Film do knihovny nepatří — smazat">🗑 Smazat film</button>';
             }
@@ -1507,6 +1576,8 @@
                 api('POST', 'Suggestions/' + enc + '/DeleteMovie').then(done, fail);
             } else if (act === 'find') {
                 findMeta(row, x);
+            } else if (act === 'alts') {
+                showAlternatives(row, x);
             }
         }
 

@@ -35,6 +35,10 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
 - **Navržené** (kontrola knihovny filmů — nic se nemaže ani nestahuje samo):
   - *lepší verze*: film pod Full HD → najde 1080p na Fastshare, „Stáhnout" (volitelně **nahradit** —
     stará verze se smaže až po úspěšném stažení), „Stačí" (už nenavrhovat), „Smazat film",
+  - 🔀 *Jiné verze* u lepší verze / chybějícího dílu: jedno ruční hledání, seznam verzí s velikostí a délkou proti tvému
+    souboru („jen menší", „nejmenší první") a „Vybrat" — třeba 2GB Full HD místo 5GB; rozdíl délky nad 5 min je
+    zvýrazněný (zkrácená / prodloužená verze); kandidát, který už je ve frontě nebo stažený, se ukáže a návrh se
+    vyřídí sám („Stáhnout" ho k položce ve frontě připojí i s nahrazením),
   - *duplicity*: film ve víc verzích → nejlepší nechat, horší smazat, případně rovnou stáhnout Full HD,
   - *bez metadat*: z názvu souboru vyčte skutečný název a rok, najde ho v TMDb (vlastní „Identifikovat"
     Jellyfinu) a po potvrzení doplní plakát, herce a popis.
