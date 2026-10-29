@@ -1384,7 +1384,7 @@
                 + '<select class="s-target" style="background:#111; color:inherit; border:1px solid #444; border-radius:4px; padding:.3em;" title="Na jakou kvalitu díly sjednotit">' + opts + '</select>'
                 + (withC ? '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;"><input type="checkbox" class="s-sreplace" checked> nahradit</label>'
                     + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="downloadAll">⬇️ Stáhnout všech ' + withC + '</button>' : '')
-                + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="allEps" title="Seznam všech dílů seriálu ke kontrole — u každého jde změnit řada/díl nebo seriál">📋 Všechny díly</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="allEps" title="Seznam všech dílů seriálu ke kontrole — u každého jde změnit řada/díl nebo seriál">📋 Všechny díly (' + sum.Episodes + ')</button>'
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="identSeries" title="Jellyfin seriál poznal špatně (jiný seriál z TMDb) — najít správný">✏️ Identifikovat seriál</button>'
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="mergeTo" title="Všechny díly přesunout do jiného seriálu (třeba stejný seriál ve dvou složkách)">📺 Celý seriál do…</button>'
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="searchNow" title="Hledat lepší verze dílů' + (sum.FindMissing ? ' a chybějící díly' : '') + ' hned — seriál jde na začátek fronty">🔎 Hledat teď</button>'
@@ -1493,21 +1493,46 @@
         }
 
         /// <select> s ostatními seriály knihovny (cíl přesunu)
+        /// Výběr cílového seriálu: hledací políčko + seznam (nativní <select> s 90 seriály a dlouhými cestami se vykresloval
+        /// nečitelně). Vybraný seriál je v .s-tosel (value), ať ho formuláře čtou stejně.
         function seriesPicker(excludeId) {
-            var list = (sugData.series || []).filter(function (s) { return s.SeriesId !== excludeId; })
+            return '<div class="s-picker" data-exclude="' + esc(excludeId) + '" style="flex:1; min-width:240px;">'
+                + '<input type="text" class="s-tofilter" placeholder="Napiš kus názvu seriálu…" style="width:100%; box-sizing:border-box; background:#111; color:#eee; border:1px solid #555; border-radius:4px; padding:.45em;">'
+                + '<input type="hidden" class="s-tosel" value="">'
+                + '<div class="s-tolist" style="max-height:15em; overflow-y:auto; margin-top:.3em;"></div></div>';
+        }
+
+        function bindPicker(root) {
+            var pk = root.querySelector('.s-picker');
+            if (!pk) return;
+            var excl = pk.getAttribute('data-exclude');
+            var all = (sugData.series || []).filter(function (s) { return s.SeriesId !== excl; })
                 .sort(function (a, b) { return a.Name.localeCompare(b.Name, 'cs'); });
-            return '<select class="s-tosel" style="background:#111; color:inherit; border:1px solid #444; border-radius:4px; padding:.3em; max-width:100%;">'
-                + '<option value="">— vyber seriál —</option>'
-                + list.map(function (s) { return '<option value="' + esc(s.SeriesId) + '">' + esc(s.Name) + ' (' + esc((s.Folders || []).join(', ')) + ')</option>'; }).join('')
-                + '</select>';
+            function norm(t) { return String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
+            function draw() {
+                var q = norm(pk.querySelector('.s-tofilter').value), sel = pk.querySelector('.s-tosel').value;
+                var hits = all.filter(function (s) { return !q || norm(s.Name).indexOf(q) >= 0 || norm((s.Folders || []).join(' ')).indexOf(q) >= 0; }).slice(0, 40);
+                pk.querySelector('.s-tolist').innerHTML = hits.map(function (s) {
+                    var folder = ((s.Folders || [])[0] || '').split('/').pop();
+                    return '<div class="s-topick" data-id="' + esc(s.SeriesId) + '" style="cursor:pointer; padding:.35em .5em; border-radius:4px; '
+                        + (s.SeriesId === sel ? 'background:#1565c0; color:#fff;' : 'background:#1b1b1b; color:#eee;') + ' margin-bottom:2px;">'
+                        + '📺 ' + esc(s.Name) + ' <span style="opacity:.6; font-size:.85em;">· ' + s.Episodes + ' dílů · složka ' + esc(folder) + '</span></div>';
+                }).join('') || '<div class="fs-msg">Nic nenalezeno.</div>';
+                pk.querySelectorAll('.s-topick').forEach(function (d) {
+                    d.addEventListener('click', function () { pk.querySelector('.s-tosel').value = d.getAttribute('data-id'); draw(); });
+                });
+            }
+            pk.querySelector('.s-tofilter').addEventListener('input', draw);
+            draw();
         }
 
         /// 📺 Krok 1: soubor do jiného seriálu (název souboru zůstane); krok 2 (číslo dílu) nabídne plugin po skenu
         function moveToSeriesForm(box, sid, path, msg) {
-            box.innerHTML = '<div class="fs-form" style="background:#151515; align-items:center;">Patří do seriálu ' + seriesPicker(sid)
+            box.innerHTML = '<div class="fs-form" style="background:#151515; align-items:flex-start; flex-wrap:wrap;"><span style="align-self:center;">Patří do seriálu</span> ' + seriesPicker(sid)
                 + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-tomove">📺 Přesunout</button></div>'
                 + '<div class="fs-sub">Soubor se přesune do složky vybraného seriálu (jméno zůstane). Po skenu knihovny plugin u nového seriálu odhadne řadu a díl'
                 + ' podle jeho dílů v TMDb — v Navržené › Seriály pak jen potvrdíš „Zařadit jako…“.</div>';
+            bindPicker(box);
             box.querySelector('.s-tomove').addEventListener('click', function () {
                 var to = box.querySelector('.s-tosel').value;
                 if (!to) { msg.textContent = 'Vyber seriál.'; return; }
@@ -1603,9 +1628,10 @@
         function mergeToForm(d, sid) {
             var panel = d.querySelector('.s-spanel');
             panel.setAttribute('data-open', 'merge');
-            panel.innerHTML = '<div class="fs-form" style="background:#151515; align-items:center;">Všechny díly přesunout do ' + seriesPicker(sid)
+            panel.innerHTML = '<div class="fs-form" style="background:#151515; align-items:flex-start; flex-wrap:wrap;"><span style="align-self:center;">Všechny díly přesunout do</span> ' + seriesPicker(sid)
                 + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-mgo2">📺 Přesunout všechny díly</button></div>'
                 + '<div class="fs-sub">Díly se přesunou do složek řad vybraného seriálu (názvy souborů zůstanou), prázdná složka zmizí. Nic se nemaže.</div><div class="fs-msg s-mmsg2"></div>';
+            bindPicker(panel);
             panel.querySelector('.s-mgo2').addEventListener('click', function () {
                 var to = panel.querySelector('.s-tosel').value, msg = panel.querySelector('.s-mmsg2');
                 if (!to) { msg.textContent = 'Vyber seriál.'; return; }
