@@ -385,6 +385,13 @@
 
         function fmtSpeed(bps) { return bps > 0 ? fmtBytes(bps) + '/s' : '–'; }
 
+        /// ▶ Otevřít soubor v Jellyfinu (nová záložka, jedním klepnutím přehrát) — ať jde poznat, co to je
+        function playBtn(itemId) {
+            if (!itemId) return '';
+            var url = location.pathname + '#/details?id=' + encodeURIComponent(itemId) + '&serverId=' + encodeURIComponent(ApiClient.serverId());
+            return ' <a href="' + url + '" target="_blank" rel="noopener" class="raised fs-btn emby-button" style="text-decoration:none; display:inline-flex; align-items:center;" title="Otevřít v Jellyfinu a přehrát (nová záložka)">▶ Přehrát</a>';
+        }
+
         function fmtDuration(sec) {
             if (!sec) return '';
             var h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
@@ -1117,7 +1124,8 @@
                 ? '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="editEpisode" data-path="' + p + '" title="Zadat řadu a díl ručně — soubor se přesune a přejmenuje">✏️ Řada/díl</button>'
                     + ' <button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="otherSeries" data-path="' + p + '" title="Díl patří do jiného seriálu — přesunout do jeho složky (číslo dílu pak odhadne plugin)">📺 Jiný seriál</button>'
                     + ' <button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="toMovie" data-path="' + p + '" title="Tohle není díl, ale film — přesunout do Filmů">🎬 Je to film</button>'
-                : '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="otherMovie" data-path="' + p + '" title="Soubor je jiný film — najít ho v TMDb, nebo oddělit do vlastní složky">✏️ Jiný film</button>');
+                : '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="otherMovie" data-path="' + p + '" title="Soubor je jiný film — najít ho v TMDb, nebo oddělit do vlastní složky">✏️ Jiný film</button>'
+                    + ' <button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="toSeries" data-path="' + p + '" title="Tohle není film, ale díl seriálu — přesunout do Seriálů">📺 Přesun do seriálů</button>');
             if (v.Suspect && x.Kind !== 'tomovies') {
                 fix = '<div class="fs-sub" style="opacity:1; color:#ffb74d; margin-left:1.6em;">⚠️ ' + esc(v.Suspect) + ' '
                     + (isEp && v.FileEpisode != null
@@ -1129,7 +1137,7 @@
             return '<div class="fs-sub">' + check + (i === 0 ? '⭐ ' : '') + '<span class="fs-badge fs-b-q">' + esc(v.Quality || '?') + '</span>'
                 + '<span class="fs-badge">' + res + '</span><span class="fs-badge">' + fmtBytes(v.SizeBytes) + '</span>'
                 + (v.DurationSec ? '<span class="fs-badge">⏱ ' + fmtDuration(v.DurationSec) + '</span>' : '')
-                + ' ' + esc(v.Path) + (edit ? ' ' + edit : '') + '</div>'
+                + ' ' + esc(v.Path) + playBtn(v.ItemId) + (edit ? ' ' + edit : '') + '</div>'
                 + (v.LengthNote ? '<div class="fs-sub" style="opacity:1; color:#90caf9; margin-left:1.6em;">⏱ ' + esc(v.LengthNote) + ' — nezaškrtnuto</div>' : '')
                 + fix;
         }
@@ -1307,13 +1315,15 @@
                 body = '<div class="fs-sub">' + esc(KIND[x.Kind] || (x.Kind === 'episode' ? 'Díl seriálu' : x.Kind)) + ' · ' + esc(x.Note || x.Status) + '</div>';
                 actions = '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reopen" title="Vrátit mezi návrhy">↩</button>';
             } else if (x.Kind === 'identify') {
-                body = (x.Versions[0] ? '<div class="fs-sub">📄 ' + esc(x.Versions[0].Path) + '</div>' : '')
+                body = (x.Versions[0] ? '<div class="fs-sub">📄 ' + esc(x.Versions[0].Path) + playBtn(x.Versions[0].ItemId || x.ItemId) + '</div>' : '')
                     + '<div class="fs-form" style="background:none; padding:0;">'
                     + '<div class="inputContainer" style="flex:1; min-width:200px;"><input is="emby-input" type="text" class="s-name" label="Název" value="' + esc(x.GuessTitle || x.Title) + '"></div>'
                     + '<div class="inputContainer" style="width:90px;"><input is="emby-input" type="number" class="s-year" label="Rok" value="' + (x.GuessYear || '') + '"></div>'
                     + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="find">🔎 Najít</button></div>'
                     + '<div class="s-results"></div>';
-                actions = '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="Nechat, jak je">✋ Nechat</button>'
+                body += '<div class="s-vfix" data-path="' + esc((x.Versions[0] || {}).Path || '') + '"></div>';
+                actions = (x.Versions[0] ? '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="toSeries" data-path="' + esc(x.Versions[0].Path) + '" title="Tohle není film, ale díl seriálu — přesunout do Seriálů">📺 Přesun do seriálů</button>' : '')
+                    + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="Nechat, jak je">✋ Nechat</button>'
                     + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Soubor do knihovny nepatří — smazat">🗑</button>';
             } else {
                 body = x.Versions.map(function (v, i) { return verRow(x, v, i, multi); }).join('')
@@ -1570,7 +1580,7 @@
                             + '<div class="fs-sub" style="opacity:1;"><strong>' + epLabel(e.season, e.episode) + '</strong> ' + esc(e.name || '')
                             + ' <span class="fs-badge fs-b-q">' + esc(e.quality || '?') + '</span><span class="fs-badge">' + fmtBytes(e.sizeBytes) + '</span>'
                             + (e.durationSec ? '<span class="fs-badge">⏱ ' + fmtDuration(e.durationSec) + '</span>' : '') + '</div>'
-                            + '<div class="fs-sub">' + esc(e.path) + ' '
+                            + '<div class="fs-sub">' + esc(e.path) + playBtn(e.itemId) + ' '
                             + '<button is="emby-button" type="button" class="raised fs-btn s-eact" data-a="fix">✏️ Řada/díl</button> '
                             + '<button is="emby-button" type="button" class="raised fs-btn s-eact" data-a="series">📺 Jiný seriál</button></div>'
                             + '<div class="s-ebox"></div><div class="s-msg fs-msg"></div></div></div>';
@@ -1778,6 +1788,24 @@
                     ebox.querySelector('.s-ego').disabled = true;
                     api('POST', 'Suggestions/' + enc + '/FixEpisode', { Path: path, Season: se, Episode: ep }).then(function (r) { startedOrDone(msg, r); },
                         function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); ebox.querySelector('.s-ego').disabled = false; });
+                });
+            } else if (act === 'toSeries') {
+                var tbox = row.querySelector('.s-vfix[data-path="' + CSS.escape(path) + '"]');
+                tbox.innerHTML = '<div class="fs-form" style="background:#151515; align-items:flex-start; flex-wrap:wrap;"><span style="align-self:center;">Díl seriálu</span> ' + seriesPicker('')
+                    + '<div class="inputContainer" style="flex:1; min-width:180px;"><input is="emby-input" type="text" class="s-newser" label="…nebo nový seriál (název)"></div>'
+                    + '<div class="inputContainer" style="width:80px;"><input is="emby-input" type="number" class="s-ts" min="0" label="Řada" value="1"></div>'
+                    + '<div class="inputContainer" style="width:80px;"><input is="emby-input" type="number" class="s-te" min="1" label="Díl"></div>'
+                    + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-tsgo">📺 Přesunout do Seriálů</button></div>'
+                    + '<div class="fs-sub">Bez čísla dílu se soubor přesune pod svým jménem a plugin ho po skenu odhadne podle dílů seriálu v TMDb (pak jen „Zařadit jako…“).'
+                    + ' S dílem dostane název „Seriál - SxxEyy“. Mezi Filmy a Seriály se soubor kopíruje, může to trvat pár minut.</div>';
+                bindPicker(tbox);
+                tbox.querySelector('.s-tsgo').addEventListener('click', function () {
+                    var to = tbox.querySelector('.s-tosel').value, nn = tbox.querySelector('.s-newser').value.trim();
+                    var se = parseInt(tbox.querySelector('.s-ts').value, 10), ep = parseInt(tbox.querySelector('.s-te').value, 10);
+                    if (!to && !nn) { msg.textContent = 'Vyber seriál ze seznamu, nebo napiš název nového.'; return; }
+                    tbox.querySelector('.s-tsgo').disabled = true;
+                    api('POST', 'Suggestions/' + enc + '/ToSeries', { Path: path, ToSeriesId: to || null, NewSeriesName: to ? null : nn, Season: se >= 0 ? se : 1, Episode: ep >= 1 ? ep : null })
+                        .then(function (r) { startedOrDone(msg, r); }, function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); tbox.querySelector('.s-tsgo').disabled = false; });
                 });
             } else if (act === 'otherSeries') {
                 moveToSeriesForm(row.querySelector('.s-vfix[data-path="' + CSS.escape(path) + '"]'), x.SeriesId, path, msg);

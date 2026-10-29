@@ -39,6 +39,8 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
     stará verze se smaže až po úspěšném stažení), „Stačí" (už nenavrhovat), „Smazat film",
   - 💾 *úspornější verze* (volitelně, Nastavení): stejná třída kvality, stejná délka (±5 min), preferovaný jazyk, aspoň
     minimální velikost a úspora aspoň 30 %; menší lepší / úspornější verzi jde volitelně stahovat a nahrazovat automaticky,
+  - ▶ *Přehrát* u každého souboru (otevře ho v Jellyfinu v nové záložce — u divných názvů hned vidíš, co to je),
+    📺 *Přesun do seriálů* u filmů a v Bez metadat (existující nebo nový seriál, řada/díl volitelně — jinak odhad po skenu),
   - seriály: 📋 *Všechny díly* (kontrola, u každého ✏️ Řada/díl a 📺 Jiný seriál), ✏️ *Identifikovat seriál* (Jellyfin
     přiřadil jiný seriál z TMDb), 📺 *Celý seriál do…*; u dílu 📺 *Jiný seriál* přesune soubor do složky jiného seriálu
     a číslo dílu pak plugin odhadne podle jeho dílů v TMDb,

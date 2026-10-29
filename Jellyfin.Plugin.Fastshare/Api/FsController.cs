@@ -1059,6 +1059,7 @@ public class FsController : ControllerBase
                 episode = f.Ep.IndexNumber,
                 name = f.Ep.Name,
                 path = f.Version.Path,
+                itemId = f.Version.ItemId,
                 quality = f.Version.Quality,
                 sizeBytes = f.Version.SizeBytes,
                 durationSec = f.Version.DurationSec,
@@ -1130,6 +1131,85 @@ public class FsController : ControllerBase
             {
                 _logger.LogInformation("Fastshare: díl {From} přesunut do seriálu {Series}: {To}", path, to.Name, moved);
                 DropPathFromSuggestions(path, "Přesunuto do seriálu " + to.Name);
+            });
+    }
+
+    public sealed class ToSeriesRequest
+    {
+        public string Path { get; set; } = string.Empty;
+
+        /// <summary>Existující seriál v knihovně…</summary>
+        public string? ToSeriesId { get; set; }
+
+        /// <summary>…nebo nový (vznikne složka v knihovně seriálů).</summary>
+        public string? NewSeriesName { get; set; }
+
+        /// <summary>Volitelně řada a díl; bez dílu soubor zůstane pod svým jménem a číslo odhadne plugin po skenu.</summary>
+        public int? Season { get; set; }
+
+        public int? Episode { get; set; }
+    }
+
+    /// <summary>
+    /// 📺 „Film" (Bez metadat, lepší verze…) je ve skutečnosti díl seriálu → přesunout ze Filmů do složky seriálu
+    /// (existujícího, nebo nového). Mezi Filmy a Seriály se soubor kopíruje — na pozadí.
+    /// </summary>
+    [HttpPost("Suggestions/{id}/ToSeries")]
+    public ActionResult ToSeries([FromRoute] string id, [FromBody] ToSeriesRequest r)
+    {
+        var s = _state.Suggestions.Get(id);
+        var v = s?.Versions.FirstOrDefault(x => x.Path == r.Path);
+        if (s == null || v == null)
+        {
+            return NotFound(new { success = false, message = "Soubor v návrhu není." });
+        }
+
+        var roots = Advisor.LibraryRoots();
+        var season = r.Season is >= 0 ? r.Season.Value : 1;
+        string seriesName;
+        string? dir;
+        if (!string.IsNullOrWhiteSpace(r.ToSeriesId))
+        {
+            var to = _state.Suggestions.Series.FirstOrDefault(x => x.SeriesId == r.ToSeriesId);
+            if (to == null)
+            {
+                return NotFound(new { success = false, message = "Seriál v knihovně není." });
+            }
+
+            seriesName = to.Name;
+            dir = Advisor.SeasonDirFor(to.SeriesId, season);
+        }
+        else if (!string.IsNullOrWhiteSpace(r.NewSeriesName))
+        {
+            var seriesPath = Plugin.Instance?.Configuration.SeriesPath;
+            if (string.IsNullOrWhiteSpace(seriesPath) || !LibraryFiles.IsInsideLibrary(Path.Combine(seriesPath, "x"), roots))
+            {
+                return BadRequest(new { success = false, message = "Cesta k seriálům v Nastavení (" + seriesPath + ") není knihovna Jellyfinu." });
+            }
+
+            seriesName = MediaOrganizer.Sanitize(r.NewSeriesName.Trim());
+            dir = Path.Combine(seriesPath, seriesName, string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Season {season:D2}"));
+        }
+        else
+        {
+            return BadRequest(new { success = false, message = "Vyber seriál, nebo napiš název nového." });
+        }
+
+        if (dir == null)
+        {
+            return BadRequest(new { success = false, message = "Seriál nemá složku v knihovně." });
+        }
+
+        var name = r.Episode is > 0 ? EpName(seriesName, season, r.Episode.Value) : null;
+        var path = v.Path;
+        return RunFileOp(
+            new[] { "sug:" + id, "path:" + path },
+            $"⏳ Přesouvám do seriálu {seriesName} ({dir}) — mezi Filmy a Seriály se soubor kopíruje, může to trvat i pár minut.",
+            () => LibraryFiles.MoveVideo(path, dir, name, roots),
+            moved =>
+            {
+                _logger.LogInformation("Fastshare: film {From} → díl seriálu {Series}: {To}", path, seriesName, moved);
+                DropPathFromSuggestions(path, "Přesunuto do seriálu " + seriesName + " → " + moved);
             });
     }
 
