@@ -262,6 +262,9 @@
                         <div class="inputContainer"><input is="emby-input" type="number" id="cfgMaxMovieSizeGb" label="Max. velikost filmu (GB, 0 = bez)" min="0" /></div>
                         <div class="inputContainer"><input is="emby-input" type="number" id="cfgMaxEpisodeSizeGb" label="Max. velikost dílu seriálu (GB, 0 = bez)" min="0" /></div>
                         <div class="inputContainer"><input is="emby-input" type="number" id="cfgMaxBitrateMbps" label="Max. datový tok (Mbit/s, 0 = bez)" min="0" /></div>
+                        <label class="checkboxContainer" style="margin:0; align-self:center;"><input is="emby-checkbox" type="checkbox" id="cfgPreferSmallerFiles" /><span>Preferovat menší soubor (v max. kvalitě co nejmenší)</span></label>
+                        <div class="inputContainer"><input is="emby-input" type="number" id="cfgMinMovieSizeMb" label="…ale film aspoň (MB)" min="0" /></div>
+                        <div class="inputContainer"><input is="emby-input" type="number" id="cfgMinEpisodeSizeMb" label="…a díl seriálu aspoň (MB)" min="0" /></div>
                         <div class="inputContainer"><input is="emby-input" type="text" id="cfgCodecPreference" label="Kodeky (pořadí, oddělit |)" /></div>
                         <div class="selectContainer"><select is="emby-select" id="cfgHdrMode" label="HDR"><option value="prefer">preferovat</option><option value="ignore">je to jedno</option><option value="avoid">vyhnout se</option></select></div>
                         <div class="selectContainer"><select is="emby-select" id="cfgDvMode" label="Dolby Vision"><option value="prefer">preferovat</option><option value="ignore">je to jedno</option><option value="avoid">vyhnout se</option></select></div>
@@ -277,7 +280,16 @@
                         <div class="inputContainer"><input is="emby-input" type="number" id="cfgSuggestRecheckDays" label="Znovu hledat po (dní)" min="1" /></div>
                         <div class="inputContainer"><input is="emby-input" type="number" id="cfgAutoSearchesPerHour" label="Automatických hledání za hodinu (0 = vypnuto, max 60)" min="0" max="60" /></div>
                         <div class="inputContainer"><input is="emby-input" type="text" id="cfgSearchHours" label="Hledat jen v hodinách (např. 1-7 nebo 1-7,13-15)" /></div>
+                        <label class="checkboxContainer" style="margin:0; align-self:center;"><input is="emby-checkbox" type="checkbox" id="cfgSearchSmallerVersions" /><span>Hledat úspornější verze (stejná kvalita, menší soubor)</span></label>
+                        <div class="inputContainer"><input is="emby-input" type="number" id="cfgSmallerMinSavingsPercent" label="…o kolik menší aspoň (%)" min="5" max="90" /></div>
+                        <label class="checkboxContainer" style="margin:0; align-self:center;"><input is="emby-checkbox" type="checkbox" id="cfgAutoDownloadSmaller" /><span>Lepší / úspornější verze s menší velikostí stahovat automaticky</span></label>
+                        <label class="checkboxContainer" style="margin:0; align-self:center;"><input is="emby-checkbox" type="checkbox" id="cfgAutoReplaceSmaller" /><span>…a automaticky nahradit (starou smazat po stažení)</span></label>
                     </div>
+                    <div class="fieldDescription">Úspornější verze = stejná třída kvality (SD / 720p / 1080p / 4K — přesné rozlišení nesedí vždy, 1920×800 je pořád
+                        Full HD), stejná délka (±5 min), preferovaný jazyk, aspoň minimální velikost z „Preferovat menší soubor“ a úspora aspoň zadaná procenta.
+                        Kvalitu obrazu z velikosti poznat nejde (HEVC bývá při polovině velikosti stejně dobré, ale příliš malý soubor je podezřelý), proto minimální velikost.
+                        Filmy stojí 1 dotaz na Fastshare, díly se berou ze sdíleného hledání seriálu. Automaticky se zařadí jen soubor menší než dnešní, aspoň stejné kvality
+                        a stejné délky; ostatní zůstanou v Navržených.</div>
                     <div class="fieldDescription">Strop platí pro kontrolu knihovny i hlídač dohromady (ruční hledání ne). Dotazy jsou rozložené
                         s náhodným rozestupem (±25 %) a jdou jen v zadaných hodinách; prázdné = kdykoli. Díly seriálů se hledají po seriálech
                         (1–2 dotazy na seriál), filmy po jednom. Příklad: 2/h v okně 1–7 = 12 dotazů za noc.</div>
@@ -1055,7 +1067,7 @@
         // Seznam se překresluje JEN po akci uživatele (filtr, řazení, tlačítko) — časovač obnovuje
         // jen stav kontroly a počty, jinak by přepsal rozepsaný název u „Bez metadat".
         var sugTimer = null, sugData = null, sugFilter = 'upgrade', sugSig = '', openSeries = {};
-        var KIND = { upgrade: '⬆️ Lepší verze', duplicate: '👯 Duplicity', series: '📺 Seriály', misplaced: '🚚 Přesunout', identify: '🏷 Bez metadat', decided: '✔ Vyřízené' };
+        var KIND = { upgrade: '⬆️ Lepší verze', smaller: '💾 Úspornější', duplicate: '👯 Duplicity', series: '📺 Seriály', misplaced: '🚚 Přesunout', identify: '🏷 Bez metadat', decided: '✔ Vyřízené' };
 
         function startSugTimer() { stopSugTimer(); sugTimer = setInterval(function () { loadSuggest(true); }, 5000); }
 
@@ -1098,11 +1110,12 @@
                     + '<input type="checkbox" class="s-del" data-path="' + esc(v.Path) + '"' + ((x.DeletePaths || []).indexOf(v.Path) >= 0 ? ' checked' : '') + '> smazat</label>'
                 : '';
             var fix = '', p = esc(v.Path);
-            var isEp = x.Kind === 'episode';
+            var isEp = x.Kind === 'episode' || (x.Kind === 'smaller' && !!x.SeriesId);
             var fixSeason = v.FileSeason != null ? v.FileSeason : (x.Season != null ? x.Season : 1);
             // ruční oprava je u každé verze — i když ji kontrola za podezřelou nepovažuje (Saw 3 × Saw 3D)
             var edit = (x.Kind === 'misplaced' || x.Kind === 'tomovies') ? '' : (isEp
                 ? '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="editEpisode" data-path="' + p + '" title="Zadat řadu a díl ručně — soubor se přesune a přejmenuje">✏️ Řada/díl</button>'
+                    + ' <button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="otherSeries" data-path="' + p + '" title="Díl patří do jiného seriálu — přesunout do jeho složky (číslo dílu pak odhadne plugin)">📺 Jiný seriál</button>'
                     + ' <button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="toMovie" data-path="' + p + '" title="Tohle není díl, ale film — přesunout do Filmů">🎬 Je to film</button>'
                 : '<button is="emby-button" type="button" class="raised fs-btn s-vact" data-vact="otherMovie" data-path="' + p + '" title="Soubor je jiný film — najít ho v TMDb, nebo oddělit do vlastní složky">✏️ Jiný film</button>');
             if (v.Suspect && x.Kind !== 'tomovies') {
@@ -1204,7 +1217,7 @@
             el('fsSugBarWrap').classList.toggle('hide', !st.running || !st.total);
             if (st.total) el('fsSugBar').style.width = Math.floor(st.done * 100 / st.total) + '%';
             el('fsSugStop').classList.toggle('hide', !st.running);
-            var counts = { upgrade: 0, duplicate: 0, series: 0, misplaced: 0, identify: 0, decided: 0 };
+            var counts = { upgrade: 0, smaller: 0, duplicate: 0, series: 0, misplaced: 0, identify: 0, decided: 0 };
             sugData.items.forEach(function (x) {
                 if (x.Status !== 'new') counts.decided++;
                 else if (x.Kind === 'episode' || x.Kind === 'missing') counts.series++;
@@ -1235,7 +1248,8 @@
         }
 
         function itemHtml(x) {
-            var head = '<div class="fs-name">' + (x.Kind === 'episode' ? esc(x.SeriesName || x.Title) + ' ' + epLabel(x.Season, x.Episode) : esc(x.Title) + (x.Year ? ' (' + x.Year + ')' : ''))
+            var isEpisodeLike = x.Kind === 'episode' || (x.Kind === 'smaller' && x.SeriesId);
+            var head = '<div class="fs-name">' + (isEpisodeLike ? (x.Kind === 'smaller' ? '💾 ' : '') + esc(x.SeriesName || x.Title) + ' ' + epLabel(x.Season, x.Episode) : esc(x.Title) + (x.Year ? ' (' + x.Year + ')' : ''))
                 + (x.OriginalTitle && x.OriginalTitle !== x.Title ? ' <span style="opacity:.6; font-weight:normal;">· ' + esc(x.OriginalTitle) + '</span>' : '')
                 + (x.Kind === 'episode' && x.TargetQuality ? ' <span style="opacity:.6; font-weight:normal;">· cíl ' + esc(x.TargetQuality) + '</span>' : '') + '</div>';
             var body = '', actions = '';
@@ -1314,7 +1328,7 @@
                 }
                 if (x.Candidate || below) actions += '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="alts" title="Najít na Fastshare jiné verze a vybrat jinou (menší, jiná délka, jiný jazyk…) — jedno ruční hledání">🔀 Jiné verze</button>';
                 actions += '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="reject" title="' + (multi ? 'Nechat všechny verze' : 'Kvalita mi stačí — nenavrhovat') + '">✋ ' + (multi ? 'Nechat' : 'Stačí') + '</button>';
-                if (x.Kind !== 'episode') actions += '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Film do knihovny nepatří — smazat">🗑 Smazat film</button>';
+                if (!isEpisodeLike) actions += '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="deleteMovie" title="Film do knihovny nepatří — smazat">🗑 Smazat film</button>';
             }
             return '<div class="fs-row" data-id="' + esc(x.Id) + '"><div class="fs-main">' + head + body + opHtml + '<div class="s-msg fs-msg"></div></div>'
                 + '<div style="display:flex; gap:.3em; flex-wrap:wrap; align-items:center;">' + actions + '</div></div>';
@@ -1370,6 +1384,9 @@
                 + '<select class="s-target" style="background:#111; color:inherit; border:1px solid #444; border-radius:4px; padding:.3em;" title="Na jakou kvalitu díly sjednotit">' + opts + '</select>'
                 + (withC ? '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;"><input type="checkbox" class="s-sreplace" checked> nahradit</label>'
                     + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="downloadAll">⬇️ Stáhnout všech ' + withC + '</button>' : '')
+                + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="allEps" title="Seznam všech dílů seriálu ke kontrole — u každého jde změnit řada/díl nebo seriál">📋 Všechny díly</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="identSeries" title="Jellyfin seriál poznal špatně (jiný seriál z TMDb) — najít správný">✏️ Identifikovat seriál</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="mergeTo" title="Všechny díly přesunout do jiného seriálu (třeba stejný seriál ve dvou složkách)">📺 Celý seriál do…</button>'
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="searchNow" title="Hledat lepší verze dílů' + (sum.FindMissing ? ' a chybějící díly' : '') + ' hned — seriál jde na začátek fronty">🔎 Hledat teď</button>'
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="rejectAll" title="Kvalita seriálu stačí — nenavrhovat jeho díly">✋ Celý seriál nechat</button>'
                 + (guessed.length ? '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="fixGuessed" title="Neočíslované díly s jistým odhadem přesunout a přejmenovat na „Seriál - SxxEyy“ (nejisté zůstanou)">🔧 Zařadit odhadnuté (' + guessed.length + ')</button>' : '')
@@ -1377,7 +1394,7 @@
                 + (sum.Missing ? '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="' + (sum.FindMissing ? 'missingOff' : 'missingOn') + '" title="Hledat chybějící díly na Fastshare v kvalitě ' + esc(sum.Target) + ' (když není, nejlepší nižší)">'
                     + (sum.FindMissing ? '⏹ Nedohledávat chybějící' : '🔍 Dohledat ' + sum.Missing + ' chybějících') + '</button>' : '')
                 + (missC ? '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="downloadMissing">⬇️ Stáhnout ' + missC + ' nalezených chybějících</button>' : '')
-                + '</div>' + (sop ? '<div class="fs-msg" style="color:' + (sop.Running ? '#90caf9' : '#ffb74d') + ';">' + esc(sop.Text) + '</div>' : '') + eps.map(itemHtml).join('')
+                + '</div><div class="s-spanel"></div>' + (sop ? '<div class="fs-msg" style="color:' + (sop.Running ? '#90caf9' : '#ffb74d') + ';">' + esc(sop.Text) + '</div>' : '') + eps.map(itemHtml).join('')
                 + (missing.length ? '<div style="margin:.8em 0 .3em; font-weight:600;">❓ Chybějící díly (' + missing.length + ')</div>' + missing.map(itemHtml).join('') : '')
                 + '</details>';
         }
@@ -1475,7 +1492,134 @@
             });
         }
 
+        /// <select> s ostatními seriály knihovny (cíl přesunu)
+        function seriesPicker(excludeId) {
+            var list = (sugData.series || []).filter(function (s) { return s.SeriesId !== excludeId; })
+                .sort(function (a, b) { return a.Name.localeCompare(b.Name, 'cs'); });
+            return '<select class="s-tosel" style="background:#111; color:inherit; border:1px solid #444; border-radius:4px; padding:.3em; max-width:100%;">'
+                + '<option value="">— vyber seriál —</option>'
+                + list.map(function (s) { return '<option value="' + esc(s.SeriesId) + '">' + esc(s.Name) + ' (' + esc((s.Folders || []).join(', ')) + ')</option>'; }).join('')
+                + '</select>';
+        }
+
+        /// 📺 Krok 1: soubor do jiného seriálu (název souboru zůstane); krok 2 (číslo dílu) nabídne plugin po skenu
+        function moveToSeriesForm(box, sid, path, msg) {
+            box.innerHTML = '<div class="fs-form" style="background:#151515; align-items:center;">Patří do seriálu ' + seriesPicker(sid)
+                + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-tomove">📺 Přesunout</button></div>'
+                + '<div class="fs-sub">Soubor se přesune do složky vybraného seriálu (jméno zůstane). Po skenu knihovny plugin u nového seriálu odhadne řadu a díl'
+                + ' podle jeho dílů v TMDb — v Navržené › Seriály pak jen potvrdíš „Zařadit jako…“.</div>';
+            box.querySelector('.s-tomove').addEventListener('click', function () {
+                var to = box.querySelector('.s-tosel').value;
+                if (!to) { msg.textContent = 'Vyber seriál.'; return; }
+                box.querySelector('.s-tomove').disabled = true;
+                api('POST', 'Suggestions/Series/' + sid + '/MoveFile', { Path: path, ToSeriesId: to }).then(function (r) { startedOrDone(msg, r); },
+                    function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); box.querySelector('.s-tomove').disabled = false; });
+            });
+        }
+
+        function fixFileForm(box, sid, path, season, episode, msg) {
+            box.innerHTML = '<div class="fs-form" style="background:#151515; align-items:center;">Zařadit jako '
+                + '<div class="inputContainer" style="width:80px;"><input is="emby-input" type="number" class="s-fs" min="0" label="Řada" value="' + (season != null ? season : 1) + '"></div>'
+                + '<div class="inputContainer" style="width:80px;"><input is="emby-input" type="number" class="s-fe" min="1" label="Díl" value="' + (episode != null ? episode : '') + '"></div>'
+                + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-fgo">🔧 Přesunout a přejmenovat</button></div>';
+            box.querySelector('.s-fgo').addEventListener('click', function () {
+                var se = parseInt(box.querySelector('.s-fs').value, 10), ep = parseInt(box.querySelector('.s-fe').value, 10);
+                if (!(se >= 0) || !(ep >= 1)) { msg.textContent = 'Zadej řadu (0 = speciály) a díl.'; return; }
+                box.querySelector('.s-fgo').disabled = true;
+                api('POST', 'Suggestions/Series/' + sid + '/FixFile', { Path: path, Season: se, Episode: ep }).then(function (r) { startedOrDone(msg, r); },
+                    function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); box.querySelector('.s-fgo').disabled = false; });
+            });
+        }
+
+        /// 📋 Všechny díly seriálu — i ty bez návrhu, ke kontrole
+        function showAllEpisodes(d, sid) {
+            var panel = d.querySelector('.s-spanel');
+            if (panel.getAttribute('data-open') === 'eps') { panel.innerHTML = ''; panel.removeAttribute('data-open'); return; }
+            panel.setAttribute('data-open', 'eps');
+            panel.innerHTML = '<div class="fs-msg">Načítám díly…</div>';
+            api('GET', 'Suggestions/Series/' + sid + '/Episodes').then(function (r) {
+                var items = r.items || [];
+                panel.innerHTML = '<div class="fs-card" style="background:#151515;"><strong>📋 Všechny díly (' + items.length + ')</strong>'
+                    + items.map(function (e, i) {
+                        return '<div class="fs-row s-erow" data-i="' + i + '" style="background:none; padding:.3em 0; border-top:1px solid #222;"><div class="fs-main">'
+                            + '<div class="fs-sub" style="opacity:1;"><strong>' + epLabel(e.season, e.episode) + '</strong> ' + esc(e.name || '')
+                            + ' <span class="fs-badge fs-b-q">' + esc(e.quality || '?') + '</span><span class="fs-badge">' + fmtBytes(e.sizeBytes) + '</span>'
+                            + (e.durationSec ? '<span class="fs-badge">⏱ ' + fmtDuration(e.durationSec) + '</span>' : '') + '</div>'
+                            + '<div class="fs-sub">' + esc(e.path) + ' '
+                            + '<button is="emby-button" type="button" class="raised fs-btn s-eact" data-a="fix">✏️ Řada/díl</button> '
+                            + '<button is="emby-button" type="button" class="raised fs-btn s-eact" data-a="series">📺 Jiný seriál</button></div>'
+                            + '<div class="s-ebox"></div><div class="s-msg fs-msg"></div></div></div>';
+                    }).join('') + '</div>';
+                panel.querySelectorAll('.s-eact').forEach(function (b) {
+                    b.addEventListener('click', function () {
+                        var row = b.closest('.s-erow'), e = items[parseInt(row.getAttribute('data-i'), 10)];
+                        var box = row.querySelector('.s-ebox'), msg = row.querySelector('.s-msg');
+                        if (b.getAttribute('data-a') === 'fix') fixFileForm(box, sid, e.path, e.season, e.episode, msg);
+                        else moveToSeriesForm(box, sid, e.path, msg);
+                    });
+                });
+            }, function (xhr) { panel.innerHTML = '<div class="fs-msg">❌ ' + esc(errMsg(xhr, 'Díly se nepodařilo načíst.')) + '</div>'; });
+        }
+
+        /// ✏️ Seriál je celý špatně identifikovaný (comeback → „Návrat na výsluní") → najít v TMDb a přepsat
+        function identifySeries(d, sid) {
+            var panel = d.querySelector('.s-spanel');
+            var sum = (sugData.series || []).filter(function (s) { return s.SeriesId === sid; })[0] || {};
+            panel.setAttribute('data-open', 'ident');
+            panel.innerHTML = '<div class="fs-card" style="background:#151515;"><div class="fs-form" style="background:none; padding:0;">'
+                + '<div class="inputContainer" style="flex:1; min-width:200px;"><input is="emby-input" type="text" class="s-iname" label="Co je to za seriál" value="' + esc(((sum.Folders || [])[0] || '').split('/').pop() || sum.Name || '') + '"></div>'
+                + '<div class="inputContainer" style="width:90px;"><input is="emby-input" type="number" class="s-iyear" label="Rok"></div>'
+                + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-igo">🔎 Najít v TMDb</button></div><div class="s-iresults"></div></div>';
+            panel.querySelector('.s-igo').addEventListener('click', function () {
+                var out = panel.querySelector('.s-iresults');
+                out.innerHTML = '<div class="fs-msg">Hledám…</div>';
+                ApiClient.ajax({
+                    type: 'POST', url: ApiClient.getUrl('Items/RemoteSearch/Series'), dataType: 'json', contentType: 'application/json',
+                    data: JSON.stringify({ SearchInfo: { Name: panel.querySelector('.s-iname').value.trim(), Year: parseInt(panel.querySelector('.s-iyear').value, 10) || null }, ItemId: sid, IncludeDisabledProviders: true })
+                }).then(function (results) {
+                    if (!results || !results.length) { out.innerHTML = '<div class="fs-msg">Nic nenalezeno — zkus jiný název nebo rok.</div>'; return; }
+                    out.innerHTML = results.slice(0, 6).map(function (m, i) {
+                        return '<div class="fs-row" style="background:#101010;">'
+                            + (m.ImageUrl ? '<img src="' + esc(m.ImageUrl) + '" style="width:46px; height:69px; object-fit:cover; border-radius:3px;" loading="lazy">' : '')
+                            + '<div class="fs-main"><div class="fs-name">' + esc(m.Name) + (m.ProductionYear ? ' (' + m.ProductionYear + ')' : '') + '</div>'
+                            + '<div class="fs-sub">' + esc((m.Overview || '').slice(0, 180)) + '</div></div>'
+                            + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-iapply" data-i="' + i + '">✅ To je on</button></div>';
+                    }).join('');
+                    out.querySelectorAll('.s-iapply').forEach(function (b) {
+                        b.addEventListener('click', function () {
+                            var m = results[parseInt(b.getAttribute('data-i'), 10)];
+                            out.innerHTML = '<div class="fs-msg">Přepisuji seriál a stahuji metadata dílů…</div>';
+                            ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('Items/RemoteSearch/Apply/' + sid, { replaceAllImages: true }), contentType: 'application/json', data: JSON.stringify(m) })
+                                .then(function () {
+                                    out.innerHTML = '<div class="fs-msg">✅ Seriál je teď „' + esc(m.Name) + '“. Jellyfin načítá díly z TMDb — za pár minut klikni na „Projít knihovnu“, plugin pak díly odhadne znovu.</div>';
+                                }, function () { out.innerHTML = '<div class="fs-msg">❌ Identifikace se nepovedla.</div>'; });
+                        });
+                    });
+                }, function () { out.innerHTML = '<div class="fs-msg">❌ Hledání selhalo.</div>'; });
+            });
+        }
+
+        /// 📺 Celý seriál do jiného (všechny díly) — přes sloučení seriálů
+        function mergeToForm(d, sid) {
+            var panel = d.querySelector('.s-spanel');
+            panel.setAttribute('data-open', 'merge');
+            panel.innerHTML = '<div class="fs-form" style="background:#151515; align-items:center;">Všechny díly přesunout do ' + seriesPicker(sid)
+                + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-mgo2">📺 Přesunout všechny díly</button></div>'
+                + '<div class="fs-sub">Díly se přesunou do složek řad vybraného seriálu (názvy souborů zůstanou), prázdná složka zmizí. Nic se nemaže.</div><div class="fs-msg s-mmsg2"></div>';
+            panel.querySelector('.s-mgo2').addEventListener('click', function () {
+                var to = panel.querySelector('.s-tosel').value, msg = panel.querySelector('.s-mmsg2');
+                if (!to) { msg.textContent = 'Vyber seriál.'; return; }
+                if (!confirm('Přesunout všechny díly do vybraného seriálu?')) return;
+                api('POST', 'Suggestions/Series/Merge', { From: sid, To: to }).then(function (r) {
+                    if (r.background) { msg.textContent = r.message + ' Po dokončení klikni na „Projít knihovnu“.'; watchOps(); } else msg.textContent = r.message;
+                });
+            });
+        }
+
         function seriesAction(d, sid, act) {
+            if (act === 'allEps') { showAllEpisodes(d, sid); return; }
+            if (act === 'identSeries') { identifySeries(d, sid); return; }
+            if (act === 'mergeTo') { mergeToForm(d, sid); return; }
             if (act === 'downloadAll') {
                 var repl = d.querySelector('.s-sreplace');
                 api('POST', 'Suggestions/Series/' + sid + '/DownloadAll', { Replace: !!(repl && repl.checked) }).then(function (r) { loadSuggest(false); });
@@ -1609,6 +1753,8 @@
                     api('POST', 'Suggestions/' + enc + '/FixEpisode', { Path: path, Season: se, Episode: ep }).then(function (r) { startedOrDone(msg, r); },
                         function (xhr) { msg.textContent = '❌ ' + errMsg(xhr, 'Nepovedlo se.'); ebox.querySelector('.s-ego').disabled = false; });
                 });
+            } else if (act === 'otherSeries') {
+                moveToSeriesForm(row.querySelector('.s-vfix[data-path="' + CSS.escape(path) + '"]'), x.SeriesId, path, msg);
             } else if (act === 'toMovie') {
                 var mbox = row.querySelector('.s-vfix[data-path="' + CSS.escape(path) + '"]');
                 mbox.innerHTML = '<div class="fs-form" style="background:#151515;">'
@@ -1713,9 +1859,9 @@
         var cfgText = ['FastshareUsername', 'FastsharePassword', 'MoviesPath', 'SeriesPath', 'WindowExtraRanges', 'SearchHours', 'SuggestTargetQuality',
             'PreferredLang1', 'PreferredLang2', 'PreferredLang3', 'CodecPreference', 'UnknownLangAs', 'MaxQuality', 'HdrMode', 'DvMode'];
         var cfgNum = ['MinFreeSpaceGb', 'MaxParallelDownloads', 'SpeedLimitMbps', 'PauseBetweenSeconds', 'DailyCapGb', 'RetryAttempts',
-            'DuplicateSizeTolerancePercent', 'WindowFromHour', 'WindowToHour', 'MaxMovieSizeGb', 'MaxEpisodeSizeGb', 'MaxBitrateMbps',
+            'DuplicateSizeTolerancePercent', 'WindowFromHour', 'WindowToHour', 'MaxMovieSizeGb', 'MaxEpisodeSizeGb', 'MaxBitrateMbps', 'MinMovieSizeMb', 'MinEpisodeSizeMb', 'SmallerMinSavingsPercent',
             'WatchDefaultIntervalDays', 'WatchSearchPages', 'SuggestIntervalDays', 'SuggestRecheckDays', 'AutoSearchesPerHour'];
-        var cfgBool = ['ShowAdult', 'TriggerLibraryScan', 'UseWeeklyWindow', 'StopAtWindowEnd', 'PreferSubsWhenForeign', 'SkipWithoutPreferredLang'];
+        var cfgBool = ['ShowAdult', 'TriggerLibraryScan', 'UseWeeklyWindow', 'StopAtWindowEnd', 'PreferSubsWhenForeign', 'SkipWithoutPreferredLang', 'PreferSmallerFiles', 'SearchSmallerVersions', 'AutoDownloadSmaller', 'AutoReplaceSmaller'];
 
         function renderWeek(spec) {
             var days = {};

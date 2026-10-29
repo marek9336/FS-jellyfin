@@ -292,8 +292,49 @@ public sealed class LibraryAdvisor : BackgroundService
             }
 
             // Nejlepší verze pod cílem (neznámé rozlišení se nebere — nejde posoudit)
-            if (best[0].Quality == null || LibraryFiles.Level(best[0].Quality) >= targetLevel)
+            if (best[0].Quality == null)
             {
+                continue;
+            }
+
+            if (LibraryFiles.Level(best[0].Quality) >= targetLevel)
+            {
+                // v cílové kvalitě: volitelně hledat úspornější verzi téže kvality
+                if (cfg.SearchSmallerVersions && best[0].SizeBytes > 0)
+                {
+                    var sm = g.Main;
+                    var smBest = best;
+                    var smId = "sm:" + id;
+                    jobs.Add(new SearchJob
+                    {
+                        Key = smId,
+                        Priority = 3,
+                        Skip = rejected.Contains(smId),
+                        Find = c => FindSmallerMovieAsync(sm, smBest[0], cfg, c),
+                        Apply = cand =>
+                        {
+                            if (cand != null)
+                            {
+                                var x = new Suggestion
+                                {
+                                    Id = smId, Kind = "smaller", ItemId = id, Title = sm.Name, OriginalTitle = sm.OriginalTitle,
+                                    Year = sm.ProductionYear, Versions = smBest, Candidate = cand,
+                                };
+                                found.Add(x);
+                                _state.Suggestions.Upsert(x);
+                                AutoQueue(x, cfg);
+                            }
+                        },
+                        KeepOld = () =>
+                        {
+                            if (_state.Suggestions.Get(smId) is { Status: "new" } old)
+                            {
+                                found.Add(old);
+                            }
+                        },
+                    });
+                }
+
                 continue;
             }
 
@@ -322,6 +363,7 @@ public sealed class LibraryAdvisor : BackgroundService
                         };
                         found.Add(up);
                         _state.Suggestions.Upsert(up); // průběžně — přerušená kontrola o nalezené nepřijde
+                        AutoQueue(up, cfg);
                     }
                 },
                 KeepOld = () =>
@@ -436,7 +478,7 @@ public sealed class LibraryAdvisor : BackgroundService
 
         // Neúplné hledání (výpadek) nesmí smazat dřívější návrhy lepších verzí, na které se nedostalo
         _state.Suggestions.Merge(found, complete
-            ? new[] { "identify", "duplicate", "episode", "missing", "misplaced", "tomovies", "upgrade" }
+            ? new[] { "identify", "duplicate", "episode", "missing", "misplaced", "tomovies", "upgrade", "smaller" }
             : new[] { "identify", "duplicate", "episode", "missing", "misplaced", "tomovies" });
         ResolveQueued();
         Status.Phase = null;
@@ -641,6 +683,42 @@ public sealed class LibraryAdvisor : BackgroundService
                 }
 
                 var below = versions[0].Quality != null && LibraryFiles.Level(versions[0].Quality) < targetLevel;
+                if (!below && cfg.SearchSmallerVersions && versions[0].Quality != null && versions[0].SizeBytes > 0
+                    && ep.ParentIndexNumber is int smS && ep.IndexNumber is int smE)
+                {
+                    var smId = "sm:" + epId;
+                    var smVersions = versions;
+                    jobs.Add(new SearchJob
+                    {
+                        Key = smId,
+                        Priority = 1,
+                        NetKey = seriesId,
+                        Skip = rejected.Contains(smId),
+                        Find = c => FindSmallerEpisodeAsync(seriesId, titles!, smS, smE, smVersions[0], cfg, c),
+                        Apply = cand =>
+                        {
+                            if (cand != null)
+                            {
+                                var x = new Suggestion
+                                {
+                                    Id = smId, Kind = "smaller", ItemId = epId, Title = name, SeriesId = seriesId, SeriesName = name,
+                                    Season = smS, Episode = smE, TargetQuality = smVersions[0].Quality, Versions = smVersions, Candidate = cand,
+                                };
+                                found.Add(x);
+                                _state.Suggestions.Upsert(x);
+                                AutoQueue(x, cfg);
+                            }
+                        },
+                        KeepOld = () =>
+                        {
+                            if (_state.Suggestions.Get(smId) is { Status: "new" } old)
+                            {
+                                found.Add(old);
+                            }
+                        },
+                    });
+                }
+
                 if (!below && versions.Count < 2 && versions.All(v => v.Suspect == null))
                 {
                     continue;
@@ -679,6 +757,10 @@ public sealed class LibraryAdvisor : BackgroundService
                     {
                         s.Candidate = cand;
                         _state.Suggestions.Upsert(s);
+                        if (s.Versions.Count == 1)
+                        {
+                            AutoQueue(s, cfg);
+                        }
                     },
                 });
             }
@@ -906,6 +988,24 @@ public sealed class LibraryAdvisor : BackgroundService
     private readonly Dictionary<string, (List<FsFile> Files, bool Truncated)> _seriesSearch = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _seriesFetched = new(StringComparer.Ordinal);
 
+    /// <summary>Hledání seriálu podle názvu jednou za kontrolu (pár stránek), sdílené všemi díly.</summary>
+    private async Task<(List<FsFile> Files, bool Truncated)> SeriesSearchAsync(string seriesId, string title, PluginConfiguration cfg, CancellationToken ct)
+    {
+        if (!_seriesSearch.TryGetValue(title, out var cached))
+        {
+            var total = 0;
+            var files = await SearchFilesAsync(FastshareClient.SearchTerm(title), SeriesSearchPages, cfg, ct, n => total = n).ConfigureAwait(false);
+            cached = (files ?? new List<FsFile>(), files != null && total > SeriesSearchPages);
+            if (files != null)
+            {
+                _seriesSearch[title] = cached;
+            }
+        }
+
+        _seriesFetched.Add(seriesId);
+        return cached;
+    }
+
     private async Task<SuggestedFile?> FindEpisodeAsync(string seriesId, IReadOnlyList<string> titles, int season, int episode, string target, PluginConfiguration cfg, CancellationToken ct, bool allowLower = false)
     {
         var opts = FsState.SelectorOptions(target);
@@ -916,18 +1016,7 @@ public sealed class LibraryAdvisor : BackgroundService
         foreach (var title in titles)
         {
             var t = new SelectTarget { Kind = MediaKind.Episode, Title = title, Season = season, Episode = episode };
-            if (!_seriesSearch.TryGetValue(title, out var cached))
-            {
-                var total = 0;
-                var files = await SearchFilesAsync(FastshareClient.SearchTerm(title), SeriesSearchPages, cfg, ct, n => total = n).ConfigureAwait(false);
-                cached = (files ?? new List<FsFile>(), files != null && total > SeriesSearchPages);
-                if (files != null)
-                {
-                    _seriesSearch[title] = cached;
-                }
-            }
-
-            _seriesFetched.Add(seriesId);
+            var cached = await SeriesSearchAsync(seriesId, title, cfg, ct).ConfigureAwait(false);
             var c = Pick(cached.Files, t, opts, fallback);
             if (c == null && cached.Truncated)
             {
@@ -1041,6 +1130,109 @@ public sealed class LibraryAdvisor : BackgroundService
             return null;
         }
     }
+
+    /// <summary>Volby pro úspornější verzi: stejná třída kvality, menší soubor napřed, minimální velikost z nastavení.</summary>
+    private static FileSelectorOptions SmallerOptions(string quality, PluginConfiguration cfg)
+    {
+        var o = FsState.SelectorOptions(quality);
+        o.MinQuality = quality;
+        o.PreferSmaller = true;
+        o.MinMovieSizeMb = cfg.MinMovieSizeMb;
+        o.MinEpisodeSizeMb = cfg.MinEpisodeSizeMb;
+        return o;
+    }
+
+    /// <summary>
+    /// Úspornější verze: o SmallerMinSavingsPercent menší než dnešní soubor, stejná délka (±5 min, když je známá),
+    /// preferovaný jazyk (o dabing nepřijít). Kvalita obrazu ze samotné velikosti poznat nejde — proto minimální velikost.
+    /// </summary>
+    private static SuggestedFile? PickSmaller(List<FsFile> files, SelectTarget t, LibraryVersion cur, PluginConfiguration cfg)
+    {
+        var opts = SmallerOptions(cur.Quality!, cfg);
+        var limit = cur.SizeBytes * (100 - Math.Clamp(cfg.SmallerMinSavingsPercent, 5, 90)) / 100;
+        var pick = FileSelector.Rank(files, t, opts).FirstOrDefault(r =>
+            r.File.SizeBytes > 0 && r.File.SizeBytes <= limit
+            && (cur.DurationSec is not > 0 || r.File.DurationSec is not > 0 || Math.Abs(r.File.DurationSec!.Value - cur.DurationSec!.Value) <= 300)
+            && FileSelector.HasPreferredLang(r.File, opts));
+        return pick == null ? null : ToSuggested(pick);
+    }
+
+    private async Task<SuggestedFile?> FindSmallerMovieAsync(BaseItem movie, LibraryVersion cur, PluginConfiguration cfg, CancellationToken ct)
+    {
+        foreach (var title in new[] { movie.Name, movie.OriginalTitle }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var t = new SelectTarget { Kind = MediaKind.Movie, Title = title!, Year = movie.ProductionYear };
+            var files = await SearchFilesAsync(t.SearchTerm(), 1, cfg, ct).ConfigureAwait(false);
+            if (files != null && PickSmaller(files, t, cur, cfg) is { } c)
+            {
+                return c;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<SuggestedFile?> FindSmallerEpisodeAsync(string seriesId, IReadOnlyList<string> titles, int season, int episode, LibraryVersion cur, PluginConfiguration cfg, CancellationToken ct)
+    {
+        foreach (var title in titles)
+        {
+            var files = await SeriesSearchAsync(seriesId, title, cfg, ct).ConfigureAwait(false);
+            var t = new SelectTarget { Kind = MediaKind.Episode, Title = title, Season = season, Episode = episode };
+            if (PickSmaller(files.Files, t, cur, cfg) is { } c)
+            {
+                return c;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// ⚡ Automaticky zařadit (Nastavení „Lepší verze s menší velikostí stahovat automaticky"): kandidát aspoň stejné
+    /// kvality, menší než dnešní soubor, stejná délka (±5 min). Volitelně nahradit (smazat starou po stažení).
+    /// </summary>
+    private void AutoQueue(Suggestion s, PluginConfiguration cfg)
+    {
+        if (!cfg.AutoDownloadSmaller || s.Candidate is not { } c || s.Versions.Count == 0 || _state.Queue.FastshareStopped)
+        {
+            return;
+        }
+
+        var cur = s.Versions[0];
+        if (c.SizeBytes <= 0 || cur.SizeBytes <= 0 || c.SizeBytes >= cur.SizeBytes
+            || LibraryFiles.Level(c.Quality) < LibraryFiles.Level(cur.Quality)
+            || (cur.DurationSec is > 0 && c.DurationSec is > 0 && Math.Abs(c.DurationSec.Value - cur.DurationSec.Value) > 300))
+        {
+            return;
+        }
+
+        if (_state.Queue.Add(QueueItemFactory.FromSuggestion(s, cfg.AutoReplaceSmaller)) != AddOutcome.Added)
+        {
+            return;
+        }
+
+        _state.Queue.Wake();
+        _state.Suggestions.Update(s.Id, x =>
+        {
+            x.Status = "done";
+            x.DecidedUtc = DateTime.UtcNow;
+            x.Note = $"⚡ Automaticky zařazeno — menší soubor ({Dedup.FormatSize(cur.SizeBytes)} → {Dedup.FormatSize(c.SizeBytes)})"
+                + (cfg.AutoReplaceSmaller ? ", stará verze se po stažení smaže" : string.Empty);
+        });
+        _logger.LogInformation("Fastshare: automaticky zařazeno {Title}: {File} ({Old} → {New})", s.Title, c.FileName, Dedup.FormatSize(cur.SizeBytes), Dedup.FormatSize(c.SizeBytes));
+    }
+
+    private static SuggestedFile ToSuggested(RankedFile r) => new()
+    {
+        FileId = r.File.Id,
+        FileName = r.File.FileName,
+        DownloadUrl = r.File.DownloadUrl,
+        SizeBytes = r.File.SizeBytes,
+        DurationSec = r.File.DurationSec,
+        Quality = r.File.Quality,
+        Language = string.IsNullOrEmpty(r.File.LanguageLabel) ? null : r.File.LanguageLabel,
+        Reason = r.Reason,
+    };
 
     private static SuggestedFile? Pick(List<FsFile> files, SelectTarget t, FileSelectorOptions opts, FileSelectorOptions? fallback)
     {

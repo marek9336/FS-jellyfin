@@ -46,6 +46,34 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public int MaxEpisodeSizeGb { get; set; } = 5;
 
+    /// <summary>
+    /// Ve zvolené (nejvyšší povolené) kvalitě brát co nejmenší soubor — Full HD film nemusí mít 5 GB, když stačí 2.
+    /// Soubory pod minimální velikostí se neberou (podezřele malé = špatná kvalita obrazu).
+    /// </summary>
+    public bool PreferSmallerFiles { get; set; }
+
+    /// <summary>Minimální velikost filmu v MB, když se preferují menší soubory.</summary>
+    public int MinMovieSizeMb { get; set; } = 1500;
+
+    /// <summary>Minimální velikost dílu seriálu v MB, když se preferují menší soubory.</summary>
+    public int MinEpisodeSizeMb { get; set; } = 250;
+
+    /// <summary>
+    /// Kontrola knihovny hledá i úspornější verze filmů a dílů ve STEJNÉ kvalitě (třída rozlišení SD/720p/1080p/4K —
+    /// přesné rozlišení nesedí vždy, 1920×800 je pořád 1080p): stejná délka (±5 min), preferovaný jazyk, aspoň
+    /// minimální velikost a úspora aspoň SmallerMinSavingsPercent. Filmy stojí 1 dotaz, díly se berou ze sdíleného hledání seriálu.
+    /// </summary>
+    public bool SearchSmallerVersions { get; set; }
+
+    /// <summary>Úspornější verze o kolik procent menší (výchozí 30 %).</summary>
+    public int SmallerMinSavingsPercent { get; set; } = 30;
+
+    /// <summary>Lepší nebo stejnou verzi, která je MENŠÍ než dnešní soubor, zařadit ke stažení sama (bez kliknutí).</summary>
+    public bool AutoDownloadSmaller { get; set; }
+
+    /// <summary>…a po úspěšném stažení starou verzi smazat (nahradit).</summary>
+    public bool AutoReplaceSmaller { get; set; }
+
     /// <summary>Maximální datový tok v Mbit/s (0 = bez limitu) — pro sledování na dálku.</summary>
     public int MaxBitrateMbps { get; set; }
 

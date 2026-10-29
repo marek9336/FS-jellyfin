@@ -807,30 +807,7 @@ public class FsController : ControllerBase
             return NotFound(new { success = false, message = "Návrh nemá soubor ke stažení." });
         }
 
-        var c = s.Candidate;
-        var episode = s.Kind is "episode" or "missing";
-        var item = new QueueItem
-        {
-            Title = s.Title,
-            Year = s.Year,
-            MediaType = episode ? MediaKind.Episode : MediaKind.Movie,
-            SeriesTitle = episode ? s.SeriesName : null,
-            Season = episode ? s.Season : null,
-            Episode = episode ? s.Episode : null,
-            TargetDir = !episode ? null : s.TargetDir ?? (s.Versions.Count > 0 ? Path.GetDirectoryName(s.Versions[0].Path) : null),
-            FileId = c.FileId,
-            FileName = c.FileName,
-            DownloadUrl = c.DownloadUrl,
-            SizeBytes = c.SizeBytes,
-            BytesTotal = c.SizeBytes,
-            SizeText = Dedup.FormatSize(c.SizeBytes),
-            DurationSec = c.DurationSec,
-            Quality = c.Quality,
-            Language = c.Language,
-            SuggestionId = s.Id,
-            ReplacePaths = r.Replace ? s.Versions.Select(v => v.Path).ToList() : null,
-            Overwrite = true, // starší verze ve stejné složce nesmí stažení přeskočit jako „duplicitu"
-        };
+        var item = QueueItemFactory.FromSuggestion(s, r.Replace);
         var outcome = _state.Queue.Add(item);
         _state.Queue.Wake();
         if (outcome != AddOutcome.Added)
@@ -1068,6 +1045,114 @@ public class FsController : ControllerBase
             x.Status = "new";
         });
         return Ok(new { success = true, message = $"Vybráno: {c.FileName} — teď můžeš dát ⬇️ Stáhnout." });
+    }
+
+    /// <summary>📋 Všechny díly seriálu (ke kontrole) — i ty, u kterých plugin nic nenavrhuje.</summary>
+    [HttpGet("Suggestions/Series/{seriesId}/Episodes")]
+    public ActionResult SeriesEpisodes([FromRoute] string seriesId)
+    {
+        var items = Advisor.SeriesFiles(seriesId)
+            .OrderBy(f => f.Ep.ParentIndexNumber ?? 999).ThenBy(f => f.Ep.IndexNumber ?? 999).ThenBy(f => f.Version.Path, StringComparer.Ordinal)
+            .Select(f => new
+            {
+                season = f.Ep.ParentIndexNumber,
+                episode = f.Ep.IndexNumber,
+                name = f.Ep.Name,
+                path = f.Version.Path,
+                quality = f.Version.Quality,
+                sizeBytes = f.Version.SizeBytes,
+                durationSec = f.Version.DurationSec,
+            })
+            .ToList();
+        return Ok(new { success = true, items });
+    }
+
+    public sealed class SeriesFileRequest
+    {
+        public string Path { get; set; } = string.Empty;
+
+        /// <summary>Cílový seriál (přesun do jiného seriálu).</summary>
+        public string? ToSeriesId { get; set; }
+
+        public int? Season { get; set; }
+
+        public int? Episode { get; set; }
+    }
+
+    private (MediaBrowser.Controller.Entities.TV.Episode Ep, LibraryVersion Version)? SeriesFile(string seriesId, string path) =>
+        Advisor.SeriesFiles(seriesId).Where(f => f.Version.Path == path).Select(f => ((MediaBrowser.Controller.Entities.TV.Episode Ep, LibraryVersion Version)?)f).FirstOrDefault();
+
+    /// <summary>Po přesunu souboru: vyřadit ho ze všech návrhů (díl, seriál), prázdné návrhy vyřídit.</summary>
+    private void DropPathFromSuggestions(string path, string note)
+    {
+        foreach (var x in _state.Suggestions.GetAll().Where(x => x.Status == "new" && x.Versions.Any(v => v.Path == path)))
+        {
+            _state.Suggestions.Update(x.Id, y =>
+            {
+                y.Versions = y.Versions.Where(v => v.Path != path).ToList();
+                y.DeletePaths = y.DeletePaths.Where(p => p != path).ToList();
+                y.Note = note;
+                if (y.Versions.Count == 0)
+                {
+                    y.Status = "done";
+                    y.DecidedUtc = DateTime.UtcNow;
+                }
+            });
+        }
+    }
+
+    /// <summary>
+    /// 📺 Díl patří do jiného seriálu (krok 1): soubor se přesune do složky cílového seriálu, název zůstane.
+    /// Po skenu knihovny ho plugin u nového seriálu odhadne podle jeho dílů z TMDb (krok 2: „Zařadit jako…").
+    /// </summary>
+    [HttpPost("Suggestions/Series/{seriesId}/MoveFile")]
+    public ActionResult MoveFileToSeries([FromRoute] string seriesId, [FromBody] SeriesFileRequest r)
+    {
+        var f = SeriesFile(seriesId, r.Path);
+        var to = _state.Suggestions.Series.FirstOrDefault(x => x.SeriesId == r.ToSeriesId);
+        if (f == null || to == null || to.SeriesId == seriesId)
+        {
+            return NotFound(new { success = false, message = "Soubor v seriálu není, nebo není vybraný jiný seriál." });
+        }
+
+        var dir = Advisor.SeasonDirFor(to.SeriesId, f.Value.Ep.ParentIndexNumber ?? 1);
+        if (dir == null)
+        {
+            return BadRequest(new { success = false, message = "Cílový seriál nemá složku v knihovně." });
+        }
+
+        var path = r.Path;
+        return RunFileOp(
+            new[] { "path:" + path },
+            $"⏳ Přesouvám do seriálu {to.Name} ({dir})…",
+            () => LibraryFiles.MoveVideo(path, dir, null, Advisor.LibraryRoots()),
+            moved =>
+            {
+                _logger.LogInformation("Fastshare: díl {From} přesunut do seriálu {Series}: {To}", path, to.Name, moved);
+                DropPathFromSuggestions(path, "Přesunuto do seriálu " + to.Name);
+            });
+    }
+
+    /// <summary>✏️ Řada a díl u libovolného souboru seriálu (ze seznamu všech dílů) → „Seriál - SxxEyy" ve složce řady.</summary>
+    [HttpPost("Suggestions/Series/{seriesId}/FixFile")]
+    public ActionResult FixSeriesFile([FromRoute] string seriesId, [FromBody] SeriesFileRequest r)
+    {
+        var f = SeriesFile(seriesId, r.Path);
+        var sum = _state.Suggestions.Series.FirstOrDefault(x => x.SeriesId == seriesId);
+        if (f == null || r.Season is null or < 0 || r.Episode is null or < 1)
+        {
+            return NotFound(new { success = false, message = "Soubor v seriálu není, nebo chybí řada a díl." });
+        }
+
+        var season = r.Season.Value;
+        var dir = Advisor.SeasonDirFor(seriesId, season) ?? Path.Combine(LibraryAdvisor.SeriesRoot(r.Path), $"Season {season:D2}");
+        var name = EpName(sum?.Name ?? f.Value.Ep.SeriesName ?? "Seriál", season, r.Episode.Value);
+        var path = r.Path;
+        return RunFileOp(
+            new[] { "path:" + path },
+            $"⏳ Přesouvám jako „{name}“…",
+            () => LibraryFiles.MoveVideo(path, dir, name, Advisor.LibraryRoots()),
+            moved => DropPathFromSuggestions(path, "Zařazeno jako " + Path.GetFileName(moved)));
     }
 
     public sealed class EpisodeTarget

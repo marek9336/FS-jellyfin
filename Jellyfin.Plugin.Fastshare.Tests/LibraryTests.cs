@@ -286,6 +286,23 @@ public sealed class LibraryTests : IDisposable
         Assert.Equal(movie, LibraryFiles.MovieInSeries(new LibraryVersion { Path = path, DurationSec = seconds }, ["Hospoda", "BBC Sexualita"]) != null);
 
     [Fact]
+    public void PreferSmallerPicksSmallestAboveMinimum()
+    {
+        FsFile F(string id, string name, long mb, string res) { var f = new FsFile { Id = id, FileName = name, DownloadUrl = "x", SizeBytes = mb << 20, Resolution = res }; FileNameParser.Fill(f); return f; }
+        var big = F("5g", "Polednice 2016 CZ 1080p.mkv", 5000, "1080p");
+        var mid = F("2g", "Polednice.2016.CZ.1080p.mkv", 2000, "1080p");
+        var tiny = F("700", "Polednice-2016-CZ-1080p.mkv", 700, "1080p");
+        var sd = F("sd", "Polednice 2016 CZ.avi", 1600, "720x400");
+        var t = new SelectTarget { Kind = MediaKind.Movie, Title = "Polednice", Year = 2016 };
+        var normal = FileSelector.Rank([big, mid, tiny, sd], t, new FileSelectorOptions { MaxQuality = "1080p" });
+        Assert.Equal("5g", normal[0].File.Id); // výchozí: větší (lepší datový tok)
+        var small = FileSelector.Rank([big, mid, tiny, sd], t, new FileSelectorOptions { MaxQuality = "1080p", PreferSmaller = true, MinMovieSizeMb = 1500 });
+        Assert.Equal("2g", small[0].File.Id); // nejmenší Full HD nad 1,5 GB
+        Assert.DoesNotContain(small, r => r.File.Id == "700");
+        Assert.True(small.FindIndex(r => r.File.Id == "5g") < small.FindIndex(r => r.File.Id == "sd")); // kvalita má pořád přednost
+    }
+
+    [Fact]
     public void MinQualityFiltersCandidates()
     {
         var sd = new FsFile { Id = "1", FileName = "Pelisky 1999 CZ.avi", DownloadUrl = "x", SizeBytes = 700L << 20, Resolution = "608x400" };

@@ -48,6 +48,14 @@ public sealed class FileSelectorOptions
     /// <summary>Max. velikost dílu seriálu v GB (0 = bez limitu) — zvlášť od filmu.</summary>
     public int MaxEpisodeSizeGb { get; set; } = 5;
 
+    /// <summary>V nejlepší povolené kvalitě a jazyce brát co nejmenší soubor (ne nejvyšší datový tok).</summary>
+    public bool PreferSmaller { get; set; }
+
+    /// <summary>Min. velikost filmu / dílu v MB při PreferSmaller (menší = podezřele špatná kvalita, nebere se).</summary>
+    public int MinMovieSizeMb { get; set; }
+
+    public int MinEpisodeSizeMb { get; set; }
+
     public int MaxBitrateMbps { get; set; }
 
     public string CodecPreference { get; set; } = "hevc|h264|av1";
@@ -164,6 +172,8 @@ public static class FileSelector
         var minLevel = QualityLevels.TryGetValue(o.MinQuality ?? string.Empty, out var mn) ? mn : 0;
         var maxGb = t.Kind == MediaKind.Episode ? o.MaxEpisodeSizeGb : o.MaxMovieSizeGb;
         var maxBytes = maxGb > 0 ? (long)maxGb * 1024 * 1024 * 1024 : long.MaxValue;
+        var minMb = t.Kind == MediaKind.Episode ? o.MinEpisodeSizeMb : o.MinMovieSizeMb;
+        var minBytes = o.PreferSmaller && minMb > 0 ? (long)minMb * 1024 * 1024 : 0;
         var codecPrefs = (o.CodecPreference ?? string.Empty)
             .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(c => c.ToLowerInvariant())
@@ -178,7 +188,8 @@ public static class FileSelector
             }
 
             var level = QualityLevels.TryGetValue(f.Quality ?? string.Empty, out var l) ? l : 0;
-            if (level > maxLevel || level < minLevel || (f.SizeBytes > 0 && f.SizeBytes > maxBytes))
+            if (level > maxLevel || level < minLevel || (f.SizeBytes > 0 && f.SizeBytes > maxBytes)
+                || (minBytes > 0 && f.SizeBytes > 0 && f.SizeBytes < minBytes))
             {
                 continue;
             }
@@ -196,7 +207,15 @@ public static class FileSelector
             }
 
             double score = langScore + (subs ? SubsBonus : 0) + (level * 10);
-            if (f.Bitrate is > 0)
+            if (o.PreferSmaller)
+            {
+                // menší je lepší, ale kvalita (10 bodů na stupeň) a jazyk mají přednost: nejvýš −9 za velikost
+                if (f.SizeBytes > 0)
+                {
+                    score -= Math.Min(f.SizeBytes / (1024.0 * 1024 * 1024), 18) / 2;
+                }
+            }
+            else if (f.Bitrate is > 0)
             {
                 score += Math.Min(f.Bitrate.Value / 1e6, 60) / 6;
             }
@@ -244,10 +263,9 @@ public static class FileSelector
             });
         }
 
-        // Při shodě skóre větší soubor (lepší encode), pak novější nahrání
-        return result
-            .OrderByDescending(r => r.Score)
-            .ThenByDescending(r => r.File.SizeBytes)
+        // Při shodě skóre větší soubor (lepší encode) — nebo menší, když se menší preferují — pak novější nahrání
+        var ordered = result.OrderByDescending(r => r.Score);
+        return (o.PreferSmaller ? ordered.ThenBy(r => r.File.SizeBytes) : ordered.ThenByDescending(r => r.File.SizeBytes))
             .ThenByDescending(r => r.File.UploadedDate, StringComparer.Ordinal)
             .ToList();
     }
@@ -281,6 +299,11 @@ public static class FileSelector
         static bool Has(FsFile f, string lang) =>
             !string.IsNullOrWhiteSpace(lang) && f.AudioLangs.Contains(Norm(lang));
     }
+
+    /// <summary>Má soubor zvuk v jazyce 1 nebo 2 (úspornější verze nesmí přijít o dabing)?</summary>
+    public static bool HasPreferredLang(FsFile f, FileSelectorOptions o) =>
+        (!string.IsNullOrWhiteSpace(o.Lang1) && f.AudioLangs.Contains(Norm(o.Lang1)))
+        || (!string.IsNullOrWhiteSpace(o.Lang2) && f.AudioLangs.Contains(Norm(o.Lang2)));
 
     private static bool HasSubs(FsFile f, string lang) =>
         !string.IsNullOrWhiteSpace(lang) && f.SubtitleLangs.Contains(Norm(lang));

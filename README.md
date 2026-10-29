@@ -24,6 +24,8 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   pauza mezi soubory.
 - **Hlídač**: seriál podle názvu → najde všechny díly a pro každý zařadí nejlepší soubor; film podle názvu
   a roku → zařadí, jakmile se objeví. Kontroluje periodicky a dohledává nové díly.
+- **Preferovat menší soubor** (Nastavení): v nejvyšší povolené kvalitě co nejmenší soubor, ale aspoň zadaná velikost
+  (film / díl zvlášť) — Full HD nemusí mít 5 GB, když stačí 2.
 - **Automatický výběr** podle priorit: jazyk (CZ dabing > SK > EN, titulky), max. kvalita, **zvlášť max.
   velikost filmu a dílu seriálu**, max. datový tok, kodek, HDR/DV.
 - **Archivy** (celé řady seriálů v `.rar` / `.zip` / `.7z`, i vícedílné `.partN.rar`, `.r00…`, `.7z.001…`):
@@ -35,6 +37,11 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
 - **Navržené** (kontrola knihovny filmů — nic se nemaže ani nestahuje samo):
   - *lepší verze*: film pod Full HD → najde 1080p na Fastshare, „Stáhnout" (volitelně **nahradit** —
     stará verze se smaže až po úspěšném stažení), „Stačí" (už nenavrhovat), „Smazat film",
+  - 💾 *úspornější verze* (volitelně, Nastavení): stejná třída kvality, stejná délka (±5 min), preferovaný jazyk, aspoň
+    minimální velikost a úspora aspoň 30 %; menší lepší / úspornější verzi jde volitelně stahovat a nahrazovat automaticky,
+  - seriály: 📋 *Všechny díly* (kontrola, u každého ✏️ Řada/díl a 📺 Jiný seriál), ✏️ *Identifikovat seriál* (Jellyfin
+    přiřadil jiný seriál z TMDb), 📺 *Celý seriál do…*; u dílu 📺 *Jiný seriál* přesune soubor do složky jiného seriálu
+    a číslo dílu pak plugin odhadne podle jeho dílů v TMDb,
   - 🔀 *Jiné verze* u lepší verze / chybějícího dílu: jedno ruční hledání, seznam verzí s velikostí a délkou proti tvému
     souboru („jen menší", „nejmenší první") a „Vybrat" — třeba 2GB Full HD místo 5GB; rozdíl délky nad 5 min je
     zvýrazněný (zkrácená / prodloužená verze); kandidát, který už je ve frontě nebo stažený, se ukáže a návrh se
