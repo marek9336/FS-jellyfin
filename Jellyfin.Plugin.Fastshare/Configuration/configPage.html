@@ -124,6 +124,7 @@
                     <span>⬇️ Fronta <span id="fsQueueCount" style="opacity:.6; font-size:.8em;"></span></span>
                     <button is="emby-button" type="button" id="fsGroupSeries" class="raised fs-btn" style="font-size:.7em;" title="Dá díly každého seriálu k sobě a seřadí S01E01 → …"><span>🔀 Seřadit seriály</span></button>
                 </h2>
+                <div id="fsQueueEta" class="fs-sub" style="opacity:1; margin:.2em 0 .6em;"></div>
                 <div id="fsQueueSeries"></div>
                 <div id="fsQueueSel" class="fs-card hide" style="position:sticky; top:0; z-index:5; display:flex; gap:.4em; flex-wrap:wrap; align-items:center;"></div>
                 <div class="fieldDescription" style="margin:-.3em 0 .5em;">Klepnutím na řádek vybereš položku (Ctrl / další klepnutí přidá, Shift vybere rozsah),
@@ -900,7 +901,11 @@
                 var sub = esc(i.fileName);
                 if (kind === 'queue' && i.status === 'Downloading') {
                     var pct = i.bytesTotal > 0 ? Math.floor(i.bytesDone * 100 / i.bytesTotal) : 0;
-                    sub += ' · ⬇️ ' + pct + ' % · ' + fmtSpeed(i.speedBps);
+                    sub += ' · ⬇️ ' + pct + ' % · ' + fmtSpeed(i.speedBps)
+                        + (i.startedUtc ? ' · začalo ' + fmtLocal(i.startedUtc) : '') + (i.etaFinishUtc ? ' · hotovo ~' + fmtLocal(i.etaFinishUtc) : '');
+                } else if (kind === 'queue' && i.etaStartUtc) {
+                    sub += ' · ⏱ začne ~' + fmtLocal(i.etaStartUtc) + ' · hotovo ~' + fmtLocal(i.etaFinishUtc)
+                        + (i.retryAfterUtc ? ' (další pokus ' + fmtLocal(i.retryAfterUtc) + (i.error ? ': ' + esc(i.error) : '') + ')' : '');
                 } else if (kind === 'queue' && i.retryAfterUtc) {
                     sub += ' · další pokus ' + fmtLocal(i.retryAfterUtc) + (i.error ? ' (' + esc(i.error) + ')' : '');
                 } else if (kind === 'queue' && i.error) {
@@ -967,6 +972,12 @@
                 renderStatus(d.status);
                 el('fsQueueCount').textContent = '(' + d.queue.length + ')';
                 renderQueueSeries(d.series);
+                var e = d.eta || {};
+                el('fsQueueEta').innerHTML = !d.queue.length ? ''
+                    : e.note ? '⏱ ' + esc(e.note)
+                    : e.allDoneUtc ? '⏱ Vše staženo ~<strong>' + fmtLocal(e.allDoneUtc) + '</strong> <span style="opacity:.7;">(při ' + fmtSpeed(e.speedBps) + ' na soubor, ' + e.slots + ' souběžně, s oknem a pořadím, jak je teď nastavené)</span>'
+                    : e.noWindow ? '⏱ Rozvrh nemá v příštím týdnu žádné okno — odhad nejde spočítat.'
+                    : e.truncated ? '⏱ Fronta je delší než 120 dní dopředu — u zbytku odhad není.' : '';
                 renderItems(d.queue, 'queue', el('fsQueueList'));
                 el('fsProblemSection').classList.toggle('hide', d.problems.length === 0);
                 el('fsProblemCount').textContent = '(' + d.problems.length + ')';

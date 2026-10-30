@@ -442,10 +442,21 @@ public class FsController : ControllerBase
                 boosted = boosted.Contains(g.Key),
             })
             .ToList();
+        var eta = QueueEtaNow(items);
+        _eta = eta.Result;
         return Ok(new
         {
             status = StatusDto(),
             series,
+            eta = new
+            {
+                allDoneUtc = eta.Result?.AllDoneUtc,
+                noWindow = eta.Result?.NoWindow ?? false,
+                truncated = eta.Result?.Truncated ?? false,
+                speedBps = eta.SpeedBps,
+                slots = eta.Slots,
+                note = eta.Note,
+            },
             queue = ordered.Select(ItemDto),
             problems = items.Where(i => i.Status == QueueItemStatus.Error).OrderByDescending(i => i.AddedUtc).Select(ItemDto),
             done = items.Where(i => i.Status is QueueItemStatus.Done or QueueItemStatus.Skipped)
@@ -453,11 +464,67 @@ public class FsController : ControllerBase
         });
     }
 
+    private EtaResult? _eta;
+
+    /// <summary>
+    /// ⏱ Odhad fronty s aktuálním nastavením (okno, souběh, ⚡, limit rychlosti, denní strop) — počítá se při každém
+    /// načtení fronty, takže po předběhnutí / změně nastavení hned sedí. Pozastaveno / ⛔ STOP → bez odhadu.
+    /// </summary>
+    private (EtaResult? Result, long SpeedBps, int Slots, string? Note) QueueEtaNow(List<QueueItem> items)
+    {
+        var cfg = Plugin.Instance!.Configuration;
+        var slots = Math.Clamp(cfg.MaxParallelDownloads, 1, 8);
+        if (_state.Queue.FastshareStopped)
+        {
+            return (null, 0, slots, "⛔ STOP — nic se nestahuje, odhad není");
+        }
+
+        if (_state.Queue.WorkerPaused)
+        {
+            return (null, 0, slots, "Pozastaveno — odhad platí až po ▶ Pokračovat");
+        }
+
+        var active = _state.Active.Values.ToList();
+        var speed = _state.Queue.AvgSpeedBps;
+        if (speed <= 0)
+        {
+            speed = active.Where(a => a.SpeedBps > 0).Select(a => a.SpeedBps).DefaultIfEmpty(2L * 1024 * 1024).Max();
+        }
+
+        if (cfg.SpeedLimitMbps > 0)
+        {
+            speed = Math.Min(speed, (long)cfg.SpeedLimitMbps * 125_000 / slots); // společný limit se dělí mezi souběžná
+        }
+
+        var result = QueueEta.Estimate(
+            items.Where(i => i.Status == QueueItemStatus.Queued).ToList(),
+            active.Select(a => new EtaActive { Id = a.ItemId, BytesDone = a.BytesDone, BytesTotal = a.BytesTotal, SpeedBps = a.SpeedBps }).ToList(),
+            new EtaSettings
+            {
+                UseWeeklyWindow = cfg.UseWeeklyWindow,
+                WeeklyWindow = cfg.WeeklyWindow,
+                WindowFromHour = cfg.WindowFromHour,
+                WindowToHour = cfg.WindowToHour,
+                WindowExtraRanges = cfg.WindowExtraRanges,
+                IgnoreWindow = _state.Queue.IgnoreWindow,
+                Slots = slots,
+                PauseBetweenSeconds = cfg.PauseBetweenSeconds,
+                DailyCapBytes = cfg.DailyCapGb > 0 ? (long)cfg.DailyCapGb * 1024 * 1024 * 1024 : 0,
+                SpeedBps = speed,
+            },
+            DateTime.Now,
+            _state.Queue.GetDailyBytes());
+        return (result, speed, slots, null);
+    }
+
     private object ItemDto(QueueItem i)
     {
         var active = _state.Active.TryGetValue(i.Id, out var a) ? a : null;
         return new
         {
+            startedUtc = active?.StartedUtc,
+            etaStartUtc = _eta != null && _eta.StartUtc.TryGetValue(i.Id, out var es) ? es : (DateTime?)null,
+            etaFinishUtc = _eta != null && _eta.FinishUtc.TryGetValue(i.Id, out var ef) ? ef : (DateTime?)null,
             id = i.Id,
             title = DownloadWorkerService.DisplayTitle(i),
             mediaType = i.MediaType == MediaKind.Episode ? "episode" : "movie",

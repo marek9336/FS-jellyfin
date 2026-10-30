@@ -18,6 +18,9 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   okno)" pustí celou frontu hned, po vyprázdnění se vrátí běžné okno.
   ⏫ *Upřednostnit seriál* (na který se právě díváš): díly před filmy i ostatními seriály, v časovém okně; přednost
   dostanou i díly, které hlídač přidá později.
+- **⏱ Odhad fronty**: u stahování „začalo / hotovo ~", u čekajících „začne ~ / hotovo ~", nahoře „vše staženo ~" —
+  s aktuálním nastavením (okno, souběh, ⚡, mimo okno, limit rychlosti, denní strop, pauza) a pořadím; přepočítá se
+  při každém obnovení (po předběhnutí hned sedí). Rychlost = průměr posledních stažení.
 - **Časová okna** — od–do, další okna („22-3,12-13") nebo rozvrh po dnech; volitelně přerušit rozjeté
   soubory na konci okna. „⚡ Stáhnout teď" okna obchází.
 - **Volitelné limity**: společný limit rychlosti všech stahování, denní strop, minimální volné místo,
