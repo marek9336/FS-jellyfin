@@ -16,6 +16,11 @@ public class LibraryVersion
 
     public string Path { get; set; } = string.Empty;
 
+    /// <summary>Jazyky zvuku a titulků (CZ/EN/…) — z Jellyfinu (stopy), jinak z názvu souboru.</summary>
+    public List<string> AudioLangs { get; set; } = new();
+
+    public List<string> SubLangs { get; set; } = new();
+
     public long SizeBytes { get; set; }
 
     public int Width { get; set; }
@@ -137,6 +142,9 @@ public class Suggestion
     /// <summary>Co se s návrhem stalo („zařazeno ke stažení, starý soubor se po stažení smaže").</summary>
     public string? Note { get; set; }
 
+    /// <summary>Jazyková verze chybějícího dílu („EN+CZtit"), null = hlavní.</summary>
+    public string? Variant { get; set; }
+
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
 
     public DateTime? DecidedUtc { get; set; }
@@ -150,6 +158,9 @@ public class SeriesSummary
     public string Name { get; set; } = string.Empty;
 
     public int Episodes { get; set; }
+
+    /// <summary>Jazykové verze, které seriál chce (null = výchozí z Nastavení).</summary>
+    public List<string>? Variants { get; set; }
 
     /// <summary>Stav podle TMDb (metadata Jellyfinu): „Ended" (ukončený), „Continuing" (běží), null = neznámý.</summary>
     public string? SeriesStatus { get; set; }
@@ -219,6 +230,9 @@ public class SuggestionState
 
     /// <summary>Ručně zvolená cílová kvalita seriálu (ID seriálu → kvalita).</summary>
     public Dictionary<string, string> SeriesTarget { get; set; } = new();
+
+    /// <summary>Jazykové verze seriálu (seriál → „CZ", „EN+CZtit"…); chybí = výchozí z Nastavení.</summary>
+    public Dictionary<string, List<string>> SeriesLangs { get; set; } = new();
 
     public List<SeriesSummary> Series { get; set; } = new();
 }
@@ -369,6 +383,31 @@ public sealed class SuggestionStore
             _state.LastRunUtc = DateTime.UtcNow;
             _state.LastResult = result;
             _state.RunPending = false;
+            SaveLocked();
+        }
+    }
+
+    public List<string>? SeriesVariants(string seriesId)
+    {
+        lock (_lock)
+        {
+            return _state.SeriesLangs.TryGetValue(seriesId, out var v) && v.Count > 0 ? v.ToList() : null;
+        }
+    }
+
+    public void SetSeriesVariants(string seriesId, List<string>? variants)
+    {
+        lock (_lock)
+        {
+            if (variants == null || variants.Count == 0)
+            {
+                _state.SeriesLangs.Remove(seriesId);
+            }
+            else
+            {
+                _state.SeriesLangs[seriesId] = variants;
+            }
+
             SaveLocked();
         }
     }

@@ -584,7 +584,8 @@ public sealed class DownloadQueue
                 !i.IsArchive
                 && (i.Status is QueueItemStatus.Queued or QueueItemStatus.Downloading)
                 && Dedup.MediaKey(i) == media
-                && Dedup.NormQuality(i.Quality) == quality))
+                && Dedup.NormQuality(i.Quality) == quality
+                && !(i.Language is { Length: > 0 } && item.Language is { Length: > 0 } && !string.Equals(i.Language, item.Language, StringComparison.OrdinalIgnoreCase))))
             {
                 _log($"queue: \"{item.Title}\" ({item.Quality}) už ve frontě je, přeskakuji");
                 return AddOutcome.DuplicateInQueue;

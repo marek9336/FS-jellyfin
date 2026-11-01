@@ -58,6 +58,9 @@ public sealed class FileSelectorOptions
 
     public int MaxBitrateMbps { get; set; }
 
+    /// <summary>Jen soubory s titulky v tomhle jazyce (jazyková verze „EN+CZtit"), null = nevyžadovat.</summary>
+    public string? RequireSubsLang { get; set; }
+
     public string CodecPreference { get; set; } = "hevc|h264|av1";
 
     /// <summary>"prefer" | "ignore" | "avoid".</summary>
@@ -201,6 +204,11 @@ public static class FileSelector
 
             var langScore = LangScore(f, o, out var langWhy);
             var subs = o.PreferSubsWhenForeign && langScore < Lang1Weight && HasSubs(f, o.Lang1);
+            if (!string.IsNullOrWhiteSpace(o.RequireSubsLang) && !HasSubs(f, o.RequireSubsLang))
+            {
+                continue;
+            }
+
             if (langScore == 0 && !subs && o.SkipWithoutPreferredLang)
             {
                 continue;

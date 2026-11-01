@@ -1148,6 +1148,8 @@
             return '<div class="fs-sub">' + check + (i === 0 ? '⭐ ' : '') + '<span class="fs-badge fs-b-q">' + esc(v.Quality || '?') + '</span>'
                 + '<span class="fs-badge">' + res + '</span><span class="fs-badge">' + fmtBytes(v.SizeBytes) + '</span>'
                 + (v.DurationSec ? '<span class="fs-badge">⏱ ' + fmtDuration(v.DurationSec) + '</span>' : '')
+                + ((v.AudioLangs || []).length ? '<span class="fs-badge fs-b-cz" title="Zvuk">🔊 ' + esc(v.AudioLangs.join(',')) + '</span>' : '')
+                + ((v.SubLangs || []).length ? '<span class="fs-badge" title="Titulky">💬 ' + esc(v.SubLangs.join(',')) + '</span>' : '')
                 + ' ' + esc(v.Path) + playBtn(v.ItemId) + (edit ? ' ' + edit : '') + '</div>'
                 + (v.LengthNote ? '<div class="fs-sub" style="opacity:1; color:#90caf9; margin-left:1.6em;">⏱ ' + esc(v.LengthNote) + ' — nezaškrtnuto</div>' : '')
                 + fix;
@@ -1239,7 +1241,7 @@
             var counts = { upgrade: 0, smaller: 0, duplicate: 0, series: 0, misplaced: 0, identify: 0, decided: 0 };
             sugData.items.forEach(function (x) {
                 if (x.Status !== 'new') counts.decided++;
-                else if (x.Kind === 'episode' || x.Kind === 'missing') counts.series++;
+                else if (x.Kind === 'episode' || x.Kind === 'missing') { counts.series++; if (x.Kind === 'episode' && x.Versions.length > 1) counts.duplicate++; }
                 else counts[x.Kind === 'tomovies' ? 'misplaced' : x.Kind]++;
             });
             el('fsSugFilters').innerHTML = Object.keys(KIND).map(function (k) {
@@ -1313,8 +1315,9 @@
             if (x.Kind === 'missing' && x.Status === 'new') {
                 head = '<div class="fs-name">❓ ' + esc(x.SeriesName || x.Title) + ' ' + epLabel(x.Season, x.Episode)
                     + (x.EpisodeName ? ' <span style="font-weight:normal;">— ' + esc(x.EpisodeName) + '</span>' : '')
+                    + (x.Variant ? ' <span class="fs-badge fs-b-cz">🗣 ' + esc(langLabel(x.Variant)) + '</span>' : '')
                     + (x.PremiereDate ? ' <span style="opacity:.6; font-weight:normal;">· ' + new Date(x.PremiereDate).toLocaleDateString('cs-CZ') + '</span>' : '') + '</div>';
-                body = '<div class="fs-sub">chybí v knihovně' + (x.TargetDir ? ' · uloží se do ' + esc(x.TargetDir) : '') + '</div>'
+                body = '<div class="fs-sub">' + (x.Variant ? 'díl v knihovně je, chybí jazyková verze ' + esc(langLabel(x.Variant)) : 'chybí v knihovně') + (x.TargetDir ? ' · uloží se do ' + esc(x.TargetDir) : '') + '</div>'
                     + (x.Candidate ? candLine(x.Candidate, x) : '<div class="fs-sub">🔍 Na Fastshare zatím nenalezen (nebo na něj hledání ještě nedošlo).</div>');
                 actions = (x.Candidate ? '<button is="emby-button" type="button" class="raised button-submit fs-btn s-act" data-act="download">⬇️ Stáhnout ' + esc(x.Candidate.Quality || '') + '</button>' : '')
                     + '<button is="emby-button" type="button" class="raised fs-btn s-act" data-act="alts" title="Najít na Fastshare jiné verze dílu a vybrat jinou (menší, jiný jazyk…)">🔀 Jiné verze</button>'
@@ -1406,6 +1409,8 @@
                 + (withC ? '<label style="display:flex; align-items:center; gap:.3em; font-size:.85em;"><input type="checkbox" class="s-sreplace" checked> nahradit</label>'
                     + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="downloadAll">⬇️ Stáhnout všech ' + withC + '</button>' : '')
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="allEps" title="Seznam všech dílů seriálu ke kontrole — u každého jde změnit řada/díl nebo seriál">📋 Všechny díly (' + sum.Episodes + ')</button>'
+                + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="langs" title="Jaké jazykové verze má seriál mít (CZ, EN s CZ titulky…) — chybějící se dohledají">🗣 Jazyky: '
+                    + esc((sum.Variants || []).map(langLabel).join(' + ') || 'výchozí') + '</button>'
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="identSeries" title="Jellyfin seriál poznal špatně (jiný seriál z TMDb) — najít správný">✏️ Identifikovat seriál</button>'
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="mergeTo" title="Všechny díly přesunout do jiného seriálu (třeba stejný seriál ve dvou složkách)">📺 Celý seriál do…</button>'
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="searchNow" title="Hledat lepší verze dílů' + (sum.FindMissing ? ' a chybějící díly' : '') + ' hned — seriál jde na začátek fronty">🔎 Hledat teď</button>'
@@ -1469,7 +1474,8 @@
             } else {
                 var list = sugData.items.filter(function (x) {
                     if (sugFilter === 'decided') return x.Status !== 'new';
-                    return x.Status === 'new' && (x.Kind === sugFilter || (sugFilter === 'misplaced' && x.Kind === 'tomovies')) && (!onlyC || x.Candidate);
+                    return x.Status === 'new' && (x.Kind === sugFilter || (sugFilter === 'misplaced' && x.Kind === 'tomovies')
+                        || (sugFilter === 'duplicate' && x.Kind === 'episode' && x.Versions.length > 1)) && (!onlyC || x.Candidate);
                 });
                 list = sortItems(list);
                 list.slice(0, 300).forEach(function (x) { html += itemHtml(x); });
@@ -1663,7 +1669,52 @@
             });
         }
 
+        function langLabel(v) { var m = String(v).match(/^([A-Z]{2})(?:\+([A-Z]{2})tit)?$/); return m ? m[1] + (m[2] ? ' + ' + m[2] + ' titulky' : '') : v; }
+
+        /// 🗣 Jazykové verze seriálu: řádky „zvuk + (titulky)"; víc řádků = víc verzí každého dílu
+        function langsForm(d, sid) {
+            var panel = d.querySelector('.s-spanel');
+            var sum = (sugData.series || []).filter(function (s) { return s.SeriesId === sid; })[0] || {};
+            var cur = (sum.Variants && sum.Variants.length) ? sum.Variants.slice() : [((cfgCache && cfgCache.PreferredLang1) || 'CZ').toUpperCase()];
+            panel.setAttribute('data-open', 'langs');
+            function row(v, i) {
+                var m = String(v).match(/^([A-Z]{2})(?:\+([A-Z]{2})tit)?$/) || [null, 'CZ', null];
+                var langs = ['CZ', 'SK', 'EN', 'DE', 'FR', 'PL', 'RU', 'JA'];
+                return '<div class="s-lrow" style="display:flex; gap:.5em; align-items:center; margin:.3em 0;">' + (i === 0 ? '<strong>Hlavní:</strong>' : '<span>+ verze:</span>')
+                    + ' zvuk <select class="s-la" style="background:#111; color:#eee; border:1px solid #555; border-radius:4px; padding:.25em;">'
+                    + langs.map(function (l) { return '<option style="background:#111; color:#eee;"' + (l === m[1] ? ' selected' : '') + '>' + l + '</option>'; }).join('') + '</select>'
+                    + ' <label style="display:flex; align-items:center; gap:.2em;"><input type="checkbox" class="s-ls"' + (m[2] ? ' checked' : '') + '> s CZ titulky</label>'
+                    + (i > 0 ? ' <button is="emby-button" type="button" class="raised fs-btn s-ldel">✕</button>' : '') + '</div>';
+            }
+            function draw() {
+                panel.innerHTML = '<div class="fs-card" style="background:#151515;"><strong>🗣 Jazykové verze seriálu</strong>'
+                    + cur.map(row).join('')
+                    + '<div style="display:flex; gap:.4em; flex-wrap:wrap; margin-top:.4em;"><button is="emby-button" type="button" class="raised fs-btn s-ladd">+ Další jazyková verze</button>'
+                    + '<button is="emby-button" type="button" class="raised button-submit fs-btn s-lsave">💾 Uložit</button>'
+                    + '<button is="emby-button" type="button" class="raised fs-btn s-lreset">Výchozí z Nastavení</button></div>'
+                    + '<div class="fs-sub">Hlavní verze se bere pro lepší verze a chybějící díly. Každá další (třeba EN s CZ titulky k českému dabingu) se u dílu hlídá zvlášť:'
+                    + ' díl bez ní se objeví mezi chybějícími s 🗣 štítkem. Kvalita: cíl seriálu (Full HD), když díl v něm není, nejvyšší dostupná nižší.'
+                    + ' Jazyky souborů plugin čte ze zvukových stop a titulků (🔊 / 💬 u každé verze).</div></div>';
+                function collect() {
+                    cur = Array.prototype.map.call(panel.querySelectorAll('.s-lrow'), function (r) {
+                        return r.querySelector('.s-la').value + (r.querySelector('.s-ls').checked ? '+CZtit' : '');
+                    });
+                }
+                panel.querySelector('.s-ladd').addEventListener('click', function () { collect(); cur.push('EN+CZtit'); draw(); });
+                panel.querySelectorAll('.s-ldel').forEach(function (b, i) { b.addEventListener('click', function () { collect(); cur.splice(i + 1, 1); draw(); }); });
+                panel.querySelector('.s-lsave').addEventListener('click', function () {
+                    collect();
+                    api('POST', 'Suggestions/Series/' + sid + '/Langs', { Variants: cur }).then(function () { setTimeout(function () { loadSuggest(false); }, 800); });
+                });
+                panel.querySelector('.s-lreset').addEventListener('click', function () {
+                    api('POST', 'Suggestions/Series/' + sid + '/Langs', { Variants: [] }).then(function () { setTimeout(function () { loadSuggest(false); }, 800); });
+                });
+            }
+            draw();
+        }
+
         function seriesAction(d, sid, act) {
+            if (act === 'langs') { langsForm(d, sid); return; }
             if (act === 'allEps') { showAllEpisodes(d, sid); return; }
             if (act === 'identSeries') { identifySeries(d, sid); return; }
             if (act === 'mergeTo') { mergeToForm(d, sid); return; }

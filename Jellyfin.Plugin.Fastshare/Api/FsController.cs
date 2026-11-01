@@ -1771,6 +1771,34 @@ public class FsController : ControllerBase
         return Ok(new { success = true, message = "Chybějící díly se hledají — seriál jde na začátek fronty. " + NextSearchNote() });
     }
 
+    public sealed class SeriesLangsRequest
+    {
+        public List<string> Variants { get; set; } = new();
+    }
+
+    /// <summary>🗣 Jazykové verze seriálu („CZ", „EN+CZtit"); prázdné = výchozí z Nastavení. Chybějící verze se pak hledají.</summary>
+    [HttpPost("Suggestions/Series/{seriesId}/Langs")]
+    public ActionResult SeriesLangs([FromRoute] string seriesId, [FromBody] SeriesLangsRequest r)
+    {
+        var list = r.Variants.Select(v => (v ?? string.Empty).Trim()).Where(v => v.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (list.Any(v => !LangVariant.IsValid(v)))
+        {
+            return BadRequest(new { success = false, message = "Neplatná jazyková verze (čekám třeba „CZ“ nebo „EN+CZtit“)." });
+        }
+
+        _state.Suggestions.SetSeriesVariants(seriesId, list);
+        Advisor.Prioritize(seriesId);
+        return Ok(new
+        {
+            success = true,
+            message = list.Count == 0
+                ? "Jazyky seriálu zpět na výchozí z Nastavení."
+                : "Jazyky seriálu: " + string.Join(", ", list.Select(LangVariant.Label)) + (list.Count > 1
+                    ? ". Díly bez některé z verzí se objeví mezi chybějícími (hledají se, když je zapnuté „Dohledat chybějící“). "
+                    : ". ") + NextSearchNote(),
+        });
+    }
+
     /// <summary>🔎 Seriál hned na řadu: lepší verze dílů (a chybějící, je-li zapnuto) i když se nedávno hledalo.</summary>
     [HttpPost("Suggestions/Series/{seriesId}/SearchNow")]
     public ActionResult SearchSeriesNow([FromRoute] string seriesId)

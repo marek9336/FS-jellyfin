@@ -44,6 +44,10 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
     minimální velikost a úspora aspoň 30 %; menší lepší / úspornější verzi jde volitelně stahovat a nahrazovat automaticky,
   - ▶ *Přehrát* u každého souboru (otevře ho v Jellyfinu v nové záložce — u divných názvů hned vidíš, co to je),
     📺 *Přesun do seriálů* u filmů a v Bez metadat (existující nebo nový seriál, řada/díl volitelně — jinak odhad po skenu),
+  - 🗣 *jazyky seriálu*: hlavní verze (CZ) a další (EN + CZ titulky…) — díl bez některé verze je mezi chybějícími,
+    hledá se v cílové kvalitě, jinak nejvyšší dostupné; jazyky souborů z Jellyfinu (🔊 zvuk, 💬 titulky), chtěné
+    jazykové verze se v duplicitách nezaškrtávají; díly seriálů ve víc verzích jsou i v Duplicitách (i když je Jellyfin
+    vede jako dvě samostatné položky se stejným SxxEyy),
   - seriály: 📋 *Všechny díly* (kontrola, u každého ✏️ Řada/díl a 📺 Jiný seriál), ✏️ *Identifikovat seriál* (Jellyfin
     přiřadil jiný seriál z TMDb), 📺 *Celý seriál do…*; u dílu 📺 *Jiný seriál* přesune soubor do složky jiného seriálu
     a číslo dílu pak plugin odhadne podle jeho dílů v TMDb,
