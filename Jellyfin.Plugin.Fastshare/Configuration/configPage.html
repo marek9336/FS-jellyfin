@@ -32,6 +32,7 @@
         #FsConfigPage .fs-b-unk { background:#444; opacity:.8; }
         #FsConfigPage .fs-b-q { background:#5a3d7a; }
         #FsConfigPage .fs-b-warn { background:#7a4b1e; }
+        #FsConfigPage .fs-b-ok { background:#2e6b34; }
         #FsConfigPage .fs-btn { padding:.25em .7em !important; margin:0 !important; min-width:0 !important; }
         #FsConfigPage .fs-bar { background:#333; border-radius:3px; height:7px; overflow:hidden; margin-top:.35em; }
         #FsConfigPage .fs-bar > div { background:#00a4dc; height:100%; width:0; }
@@ -123,8 +124,10 @@
                 <h2 style="display:flex; align-items:center; gap:.6em; flex-wrap:wrap;">
                     <span>⬇️ Fronta <span id="fsQueueCount" style="opacity:.6; font-size:.8em;"></span></span>
                     <button is="emby-button" type="button" id="fsGroupSeries" class="raised fs-btn" style="font-size:.7em;" title="Dá díly každého seriálu k sobě a seřadí S01E01 → …"><span>🔀 Seřadit seriály</span></button>
+                    <button is="emby-button" type="button" id="fsSortSavings" class="raised fs-btn" style="font-size:.7em;" title="Filmy, které nahradí stávající soubor menším, půjdou mezi filmy první (nejvíc ušetří první). Nové filmy a vylepšení bez úspory zůstanou za nimi, seriály se nehýbou."><span>💾 Filmy podle úspory</span></button>
                 </h2>
                 <div id="fsQueueEta" class="fs-sub" style="opacity:1; margin:.2em 0 .6em;"></div>
+                <div id="fsQueueSpace" class="fs-sub" style="opacity:1; margin:-.3em 0 .6em;"></div>
                 <div id="fsQueueSeries"></div>
                 <div id="fsQueueSel" class="fs-card hide" style="position:sticky; top:0; z-index:5; display:flex; gap:.4em; flex-wrap:wrap; align-items:center;"></div>
                 <div class="fieldDescription" style="margin:-.3em 0 .5em;">Klepnutím na řádek vybereš položku (Ctrl / další klepnutí přidá, Shift vybere rozsah),
@@ -761,6 +764,46 @@
         el('fsLinksBtn').addEventListener('click', loadLinks);
 
         // ── Fronta ───────────────────────────────────────────────
+        /// Fronta: co položka udělá s knihovnou — úspora místa, změna kvality, datového toku, délky a jazyka
+        function compareLine(i) {
+            var c = i.compare;
+            if (!c || i.status === 'Skipped') return '';
+            var done = i.status === 'Done';
+            var parts = [];
+            if (c.kind === 'new') {
+                parts.push('<span class="fs-badge">🆕 nový</span> zabere ' + fmtBytes(c.newBytes));
+            } else {
+                if (c.kind === 'replace' && c.oldBytes > 0) {
+                    parts.push(c.savedBytes > 0
+                        ? '<span class="fs-badge fs-b-ok">💾 ' + (done ? 'ušetřilo ' : 'ušetří ') + fmtBytes(c.savedBytes) + ' (−' + c.savedPercent + ' %)</span>'
+                        : '<span class="fs-badge fs-b-warn">📈 zabere o ' + fmtBytes(c.deltaBytes) + ' víc</span>');
+                    parts.push('nahradí ' + (c.oldCount > 1 ? c.oldCount + ' soubory ' : '') + fmtBytes(c.oldBytes) + ' → ' + fmtBytes(c.newBytes));
+                } else if (c.kind === 'replace') {
+                    parts.push('nahradí ' + c.oldCount + ' ' + (c.oldCount === 1 ? 'soubor' : 'soubory') + ' (velikost nezjištěna)');
+                } else {
+                    parts.push('<span class="fs-badge">➕ vedle stávající</span> +' + fmtBytes(c.newBytes) + ' (teď ' + fmtBytes(c.oldBytes) + ', nic se nemaže)');
+                }
+                if (c.oldQuality || c.newQuality) {
+                    var q = esc(c.oldQuality || '?') + ' → ' + esc(c.newQuality || '?');
+                    parts.push(c.qualityStep > 0 ? '<span class="fs-badge fs-b-q">⬆ ' + q + '</span>'
+                        : c.qualityStep < 0 ? '<span class="fs-badge fs-b-warn">⬇ ' + q + '</span>'
+                        : c.qualityStep === 0 ? 'kvalita stejná (' + esc(c.newQuality) + ')' : q);
+                }
+                if (c.oldBitrate && c.newBitrate) {
+                    var pct = Math.round((c.newBitrate - c.oldBitrate) * 100 / c.oldBitrate);
+                    parts.push('tok ' + (c.oldBitrate / 1e6).toFixed(1).replace('.', ',') + ' → ' + (c.newBitrate / 1e6).toFixed(1).replace('.', ',') + ' Mb/s'
+                        + (pct ? ' (' + (pct > 0 ? '+' : '') + pct + ' %)' : ''));
+                }
+                if (c.durationDiffSec != null && Math.abs(c.durationDiffSec) >= 300) {
+                    parts.push('<span class="fs-badge fs-b-warn">⏱ o ' + fmtDuration(Math.abs(c.durationDiffSec)) + (c.durationDiffSec < 0 ? ' kratší' : ' delší') + '</span>');
+                }
+                if (c.oldLangs && c.newLangs && c.oldLangs.replace(/\W/g, '').toUpperCase() !== c.newLangs.replace(/\W/g, '').toUpperCase()) {
+                    parts.push('jazyk ' + esc(c.oldLangs) + ' → ' + esc(c.newLangs));
+                }
+            }
+            return '<div class="fs-sub" style="opacity:.9;">' + parts.join(' · ') + '</div>';
+        }
+
         function itemBadges(i) {
             return (i.quality ? '<span class="fs-badge fs-b-q">' + esc(i.quality) + '</span>' : '')
                 + (i.language ? '<span class="fs-badge">' + esc(i.language) + '</span>' : '')
@@ -918,7 +961,7 @@
                         + (i.resultNote ? '<br>♻️ ' + esc(i.resultNote) : '');
                 }
                 html += '<div class="fs-row' + (kind === 'queue' && qSel.has(String(i.id)) ? ' fs-sel' : '') + '" data-id="' + i.id + '"' + (kind === 'queue' ? ' style="cursor:pointer;"' : '') + '><div class="fs-main"><div class="fs-name">' + esc(i.title) + '</div>'
-                    + '<div class="fs-sub">' + sub + '</div><div>' + itemBadges(i) + '</div></div>'
+                    + '<div class="fs-sub">' + sub + '</div>' + compareLine(i) + '<div>' + itemBadges(i) + '</div></div>'
                     + '<div style="display:flex; gap:.3em;">' + rowButtons(i, kind) + '</div></div>';
             });
             target.innerHTML = html || '<div class="fs-msg" style="opacity:.6;">Nic.</div>';
@@ -978,6 +1021,14 @@
                     : e.allDoneUtc ? '⏱ Vše staženo ~<strong>' + fmtLocal(e.allDoneUtc) + '</strong> <span style="opacity:.7;">(při ' + fmtSpeed(e.speedBps) + ' na soubor, ' + e.slots + ' souběžně, s oknem a pořadím, jak je teď nastavené)</span>'
                     : e.noWindow ? '⏱ Rozvrh nemá v příštím týdnu žádné okno — odhad nejde spočítat.'
                     : e.truncated ? '⏱ Fronta je delší než 120 dní dopředu — u zbytku odhad není.' : '';
+                var sp = d.space || {};
+                el('fsQueueSpace').innerHTML = !d.queue.length ? '' : '💾 '
+                    + (sp.savers ? '<strong>' + sp.savers + '× náhrada uvolní ' + fmtBytes(sp.savedBytes) + '</strong>' : 'žádná náhrada neušetří místo')
+                    + ' · přibude ' + fmtBytes(sp.grownBytes)
+                    + ' · bilance knihovny <strong>' + (sp.deltaBytes < 0 ? '−' + fmtBytes(-sp.deltaBytes) : '+' + fmtBytes(sp.deltaBytes)) + '</strong>'
+                    + ' <span style="opacity:.7;">(' + sp.replaceCount + ' náhrad, ' + sp.besideCount + ' vedle stávající, ' + sp.newCount + ' nových'
+                    + (sp.betterCount ? ', ' + sp.betterCount + '× vyšší kvalita' : '') + ')</span>';
+                el('fsSortSavings').disabled = !sp.moviesSavers;
                 renderItems(d.queue, 'queue', el('fsQueueList'));
                 el('fsProblemSection').classList.toggle('hide', d.problems.length === 0);
                 el('fsProblemCount').textContent = '(' + d.problems.length + ')';
@@ -1015,6 +1066,7 @@
             api('POST', 'Worker/' + (paused ? 'resume' : 'pause')).then(refreshQueue, refreshQueue);
         });
         el('fsGroupSeries').addEventListener('click', function () { api('POST', 'Queue/GroupSeries').then(refreshQueue); });
+        el('fsSortSavings').addEventListener('click', function () { api('POST', 'Queue/SortMoviesBySavings').then(refreshQueue, refreshQueue); });
         el('fsRetryAll').addEventListener('click', function () { api('POST', 'Queue/RetryAll').then(refreshQueue); });
         el('fsDoneClear').addEventListener('click', function () { api('POST', 'Queue/ClearCompleted').then(refreshQueue); });
 

@@ -252,6 +252,83 @@ public sealed class DownloadQueue
     }
 
     /// <summary>
+    /// „Seřadit filmy podle úspory": filmy, které nahradí stávající soubor menším, půjdou mezi filmy první
+    /// (nejvíc ušetří první). Ostatní filmy (nové, vylepšení bez úspory) zůstanou za nimi v dosavadním pořadí,
+    /// díly seriálů se nehýbou. Vrací počet filmů s úsporou a celkovou úsporu.
+    /// </summary>
+    public (bool Changed, int Count, long SavedBytes) SortMoviesBySavings()
+    {
+        lock (_lock)
+        {
+            var queued = QueuedForReorderLocked();
+            var slots = new List<int>();
+            for (var i = 0; i < queued.Count; i++)
+            {
+                if (queued[i].MediaType == MediaKind.Movie)
+                {
+                    slots.Add(i);
+                }
+            }
+
+            var movies = slots.Select(i => queued[i]).ToList();
+            var savers = movies
+                .Select(m => (Item: m, Saved: QueueCompare.Savings(m)))
+                .Where(x => x.Saved > 0)
+                .OrderByDescending(x => x.Saved)
+                .ToList();
+            var saverIds = savers.Select(x => x.Item.Id).ToHashSet();
+            var sorted = savers.Select(x => x.Item).Concat(movies.Where(m => !saverIds.Contains(m.Id))).ToList();
+            var ordered = queued.ToList();
+            for (var n = 0; n < slots.Count; n++)
+            {
+                ordered[slots[n]] = sorted[n];
+            }
+
+            var changed = ApplyOrderLocked(queued, ordered);
+            var total = savers.Sum(x => x.Saved);
+            if (changed)
+            {
+                _log($"queue: filmy seřazeny podle úspory ({savers.Count} náhrad ušetří {Dedup.FormatSize(total)})");
+            }
+
+            return (changed, savers.Count, total);
+        }
+    }
+
+    /// <summary>
+    /// Doplní srovnání s knihovnou položkám zařazeným před 0.19 (ty ho nemají) — `filled` jsou kopie z GetAll
+    /// s vyplněným srovnáním (zjišťuje se mimo zámek fronty, čte návrhy a soubory).
+    /// </summary>
+    public void ApplyComparison(IReadOnlyList<QueueItem> filled)
+    {
+        lock (_lock)
+        {
+            foreach (var f in filled)
+            {
+                var item = _state.Items.FirstOrDefault(i => i.Id == f.Id);
+                if (item == null)
+                {
+                    continue;
+                }
+
+                item.OldKnown = true;
+                item.OldFileCount = f.OldFileCount;
+                item.OldSizeBytes = f.OldSizeBytes;
+                item.OldQuality = f.OldQuality;
+                item.OldHeight = f.OldHeight;
+                item.OldBitrate = f.OldBitrate;
+                item.OldDurationSec = f.OldDurationSec;
+                item.OldLangs = f.OldLangs;
+            }
+
+            if (filled.Count > 0)
+            {
+                SaveLocked();
+            }
+        }
+    }
+
+    /// <summary>
     /// „Upřednostnit seriál": všechny čekající díly seriálu půjdou na začátek fronty
     /// (hned za položky s ⚡ předností), seřazené S01E01 → … Vrací počet dílů.
     /// </summary>

@@ -8,7 +8,7 @@ public static class QueueItemFactory
     {
         var c = s.Candidate ?? throw new InvalidOperationException("Návrh nemá kandidáta");
         var episode = s.Kind is "episode" or "missing" || (s.Kind == "smaller" && s.SeriesId != null);
-        return new QueueItem
+        var item = new QueueItem
         {
             Title = s.Title,
             Year = s.Year,
@@ -30,6 +30,8 @@ public static class QueueItemFactory
             ReplacePaths = replace ? s.Versions.Select(v => v.Path).ToList() : null,
             Overwrite = true, // starší verze ve stejné složce nesmí stažení přeskočit jako „duplicitu"
         };
+        QueueCompare.Snapshot(item, s.Versions); // fronta ukáže úsporu místa a změnu kvality proti knihovně
+        return item;
     }
 
     public static QueueItem Create(FsFile f, SelectTarget t)

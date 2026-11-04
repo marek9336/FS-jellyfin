@@ -423,6 +423,7 @@ public class FsController : ControllerBase
     public ActionResult GetQueue()
     {
         var items = _state.Queue.GetAll();
+        BackfillComparison(items);
         var ordered = QueueOrder.ByPriority(items.Where(i => i.Status is QueueItemStatus.Queued or QueueItemStatus.Downloading))
             .OrderBy(i => i.Status == QueueItemStatus.Downloading ? 0 : 1)
             .ToList();
@@ -457,6 +458,7 @@ public class FsController : ControllerBase
                 slots = eta.Slots,
                 note = eta.Note,
             },
+            space = SpaceSummary(ordered),
             queue = ordered.Select(ItemDto),
             problems = items.Where(i => i.Status == QueueItemStatus.Error).OrderByDescending(i => i.AddedUtc).Select(ItemDto),
             done = items.Where(i => i.Status is QueueItemStatus.Done or QueueItemStatus.Skipped)
@@ -465,6 +467,60 @@ public class FsController : ControllerBase
     }
 
     private EtaResult? _eta;
+
+    /// <summary>Souhrn fronty: kolik místa náhrady uvolní a kolik nové soubory zaberou.</summary>
+    private static object SpaceSummary(List<QueueItem> queue)
+    {
+        var c = queue.Select(QueueCompare.Of).ToList();
+        var savers = c.Where(x => x.SavedBytes > 0).ToList();
+        return new
+        {
+            savedBytes = savers.Sum(x => x.SavedBytes),
+            savers = savers.Count,
+            moviesSavers = queue.Where(i => i.MediaType == MediaKind.Movie && i.Status == QueueItemStatus.Queued && !i.ForceNow).Count(i => QueueCompare.Savings(i) > 0),
+            grownBytes = c.Where(x => x.DeltaBytes > 0).Sum(x => x.DeltaBytes),
+            deltaBytes = c.Sum(x => x.DeltaBytes),
+            replaceCount = c.Count(x => x.Kind == "replace"),
+            besideCount = c.Count(x => x.Kind == "beside"),
+            newCount = c.Count(x => x.Kind == "new"),
+            betterCount = c.Count(x => x.QualityStep > 0),
+        };
+    }
+
+    /// <summary>
+    /// Položky zařazené před 0.19 nemají srovnání s knihovnou — doplní se jednou z návrhu, ze kterého vznikly
+    /// (verze v knihovně), jinak aspoň velikost mazaných souborů z disku.
+    /// </summary>
+    private void BackfillComparison(List<QueueItem> items)
+    {
+        var filled = new List<QueueItem>();
+        foreach (var i in items.Where(i => !i.OldKnown && i.Status is QueueItemStatus.Queued or QueueItemStatus.Downloading or QueueItemStatus.Error))
+        {
+            var s = i.SuggestionId != null ? _state.Suggestions.Get(i.SuggestionId) : null;
+            if (s != null && s.Versions.Count > 0)
+            {
+                QueueCompare.Snapshot(i, s.Versions);
+            }
+            else if (i.ReplacePaths is { Count: > 0 })
+            {
+                var files = i.ReplacePaths.Select(p => new FileInfo(p)).Where(f => f.Exists).ToList();
+                QueueCompare.Snapshot(i, files.Select(f =>
+                {
+                    var parsed = new FsFile { FileName = f.Name };
+                    FileNameParser.Fill(parsed);
+                    return new LibraryVersion { Path = f.FullName, SizeBytes = f.Length, Quality = parsed.Quality };
+                }).ToList());
+            }
+            else
+            {
+                i.OldKnown = true;
+            }
+
+            filled.Add(i);
+        }
+
+        _state.Queue.ApplyComparison(filled);
+    }
 
     /// <summary>
     /// ⏱ Odhad fronty s aktuálním nastavením (okno, souběh, ⚡, limit rychlosti, denní strop) — počítá se při každém
@@ -553,10 +609,30 @@ public class FsController : ControllerBase
             archiveSeason = i.ArchiveSeason,
             archiveResult = i.ArchiveResult,
             resultNote = i.ResultNote,
+            compare = i.OldKnown ? CompareDto(QueueCompare.Of(i)) : null,
             addedUtc = i.AddedUtc,
             completedUtc = i.CompletedUtc,
         };
     }
+
+    private static object CompareDto(QueueComparison c) => new
+    {
+        kind = c.Kind,
+        oldCount = c.OldCount,
+        oldBytes = c.OldBytes,
+        newBytes = c.NewBytes,
+        deltaBytes = c.DeltaBytes,
+        savedBytes = c.SavedBytes,
+        savedPercent = c.SavedPercent,
+        oldQuality = c.OldQuality,
+        newQuality = c.NewQuality,
+        qualityStep = c.QualityStep,
+        oldBitrate = c.OldBitrate,
+        newBitrate = c.NewBitrate,
+        durationDiffSec = c.DurationDiffSec,
+        oldLangs = c.OldLangs,
+        newLangs = c.NewLangs,
+    };
 
     [HttpGet("Status")]
     public ActionResult GetStatus() => Ok(StatusDto());
@@ -723,6 +799,22 @@ public class FsController : ControllerBase
             message = r.On
                 ? $"⏫ {r.SeriesTitle} má přednost před filmy i ostatními seriály ({n} {(n == 1 ? "díl" : n is > 1 and < 5 ? "díly" : "dílů")} ve frontě, nové díly ji dostanou taky). Stahuje se v časovém okně — hned jen s ⚡."
                 : $"{r.SeriesTitle} už není upřednostněný.",
+        });
+    }
+
+    /// <summary>💾 Seřadit filmy podle úspory: náhrady menším souborem první (nejvíc ušetří první), seriály se nehýbou.</summary>
+    [HttpPost("Queue/SortMoviesBySavings")]
+    public ActionResult SortMoviesBySavings()
+    {
+        BackfillComparison(_state.Queue.GetAll());
+        var (changed, count, saved) = _state.Queue.SortMoviesBySavings();
+        return Ok(new
+        {
+            success = true,
+            message = count == 0
+                ? "Ve frontě není žádný film, který by nahradil stávající soubor menším — pořadí beze změny."
+                : $"💾 {count} {(count == 1 ? "film" : count < 5 ? "filmy" : "filmů")} s úsporou jde mezi filmy první (celkem ušetří {Dedup.FormatSize(saved)})"
+                  + (changed ? "." : " — už tak seřazeno."),
         });
     }
 

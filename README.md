@@ -18,6 +18,10 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   okno)" pustí celou frontu hned, po vyprázdnění se vrátí běžné okno.
   ⏫ *Upřednostnit seriál* (na který se právě díváš): díly před filmy i ostatními seriály, v časovém okně; přednost
   dostanou i díly, které hlídač přidá později.
+  U každé položky srovnání s knihovnou: 💾 kolik náhrada ušetří (nebo o kolik zabere víc), ⬆ změna kvality,
+  datový tok, ⏱ rozdíl délky, jazyk; nahoře souhrn (kolik náhrady uvolní, kolik přibude, bilance).
+  💾 *Filmy podle úspory*: filmy nahrazující stávající soubor menším jdou mezi filmy první (nejvíc ušetří první),
+  nové filmy a vylepšení bez úspory zůstanou za nimi, seriály se nehýbou.
 - **⏱ Odhad fronty**: u stahování „začalo / hotovo ~", u čekajících „začne ~ / hotovo ~", nahoře „vše staženo ~" —
   s aktuálním nastavením (okno, souběh, ⚡, mimo okno, limit rychlosti, denní strop, pauza) a pořadím; přepočítá se
   při každém obnovení (po předběhnutí hned sedí). Rychlost = průměr posledních stažení.

@@ -227,6 +227,27 @@ public class QueueItem
 
     /// <summary>Doplňující výsledek pro GUI („nahrazeno — smazány 2 starší verze").</summary>
     public string? ResultNote { get; set; }
+
+    // ── Srovnání se stávající verzí v knihovně (fronta: úspora místa, zlepšení kvality) ──
+    /// <summary>Srovnání už se zjistilo (u položek zařazených před 0.19 se doplní jednou z návrhu).</summary>
+    public bool OldKnown { get; set; }
+
+    /// <summary>Kolik souborů položka nahradí (u náhrady) / kolik verzí titulu už v knihovně je (jinak). 0 = nový.</summary>
+    public int OldFileCount { get; set; }
+
+    /// <summary>U náhrady součet mazaných souborů, jinak velikost nejlepší stávající verze.</summary>
+    public long OldSizeBytes { get; set; }
+
+    public string? OldQuality { get; set; }
+
+    public int OldHeight { get; set; }
+
+    public long? OldBitrate { get; set; }
+
+    public int? OldDurationSec { get; set; }
+
+    /// <summary>Jazyky stávající verze („CZ", „EN + CZ tit.").</summary>
+    public string? OldLangs { get; set; }
 }
 
 /// <summary>Jeden soubor archivu (u vícedílného jich je víc, stahují se postupně).</summary>
