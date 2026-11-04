@@ -764,6 +764,8 @@
         el('fsLinksBtn').addEventListener('click', loadLinks);
 
         // ── Fronta ───────────────────────────────────────────────
+        function cz(n, one, few, many) { return n + ' ' + (n === 1 ? one : n > 1 && n < 5 ? few : many); }
+
         /// Fronta: co položka udělá s knihovnou — úspora místa, změna kvality, datového toku, délky a jazyka
         function compareLine(i) {
             var c = i.compare;
@@ -792,7 +794,7 @@
                 if (c.oldBitrate && c.newBitrate) {
                     var pct = Math.round((c.newBitrate - c.oldBitrate) * 100 / c.oldBitrate);
                     parts.push('tok ' + (c.oldBitrate / 1e6).toFixed(1).replace('.', ',') + ' → ' + (c.newBitrate / 1e6).toFixed(1).replace('.', ',') + ' Mb/s'
-                        + (pct ? ' (' + (pct > 0 ? '+' : '') + pct + ' %)' : ''));
+                        + (pct ? ' (' + (pct > 0 ? '+' : '−') + Math.abs(pct) + ' %)' : ''));
                 }
                 if (c.durationDiffSec != null && Math.abs(c.durationDiffSec) >= 300) {
                     parts.push('<span class="fs-badge fs-b-warn">⏱ o ' + fmtDuration(Math.abs(c.durationDiffSec)) + (c.durationDiffSec < 0 ? ' kratší' : ' delší') + '</span>');
@@ -1026,7 +1028,8 @@
                     + (sp.savers ? '<strong>' + sp.savers + '× náhrada uvolní ' + fmtBytes(sp.savedBytes) + '</strong>' : 'žádná náhrada neušetří místo')
                     + ' · přibude ' + fmtBytes(sp.grownBytes)
                     + ' · bilance knihovny <strong>' + (sp.deltaBytes < 0 ? '−' + fmtBytes(-sp.deltaBytes) : '+' + fmtBytes(sp.deltaBytes)) + '</strong>'
-                    + ' <span style="opacity:.7;">(' + sp.replaceCount + ' náhrad, ' + sp.besideCount + ' vedle stávající, ' + sp.newCount + ' nových'
+                    + ' <span style="opacity:.7;">(' + cz(sp.replaceCount, 'náhrada', 'náhrady', 'náhrad') + ', ' + sp.besideCount + ' vedle stávající, '
+                    + cz(sp.newCount, 'nový', 'nové', 'nových')
                     + (sp.betterCount ? ', ' + sp.betterCount + '× vyšší kvalita' : '') + ')</span>';
                 el('fsSortSavings').disabled = !sp.moviesSavers;
                 renderItems(d.queue, 'queue', el('fsQueueList'));
