@@ -301,6 +301,11 @@ public sealed class SuggestionStore
                         s.Candidate ??= old.Candidate; // kandidát z dřívějška, když se teď nehledalo
                         _state.Items[_state.Items.IndexOf(old)] = s;
                     }
+                    else if (Reopens(old, s))
+                    {
+                        s.Note = "Znovu: přibyl soubor, který k dílu nesedí";
+                        _state.Items[_state.Items.IndexOf(old)] = s;
+                    }
                 }
                 else
                 {
@@ -313,6 +318,16 @@ public sealed class SuggestionStore
             SaveLocked();
         }
     }
+
+    /// <summary>
+    /// Vyřízený návrh dílu / duplicity se vrátí, když v něm přibyl soubor, který k položce nesedí (Jellyfin ho čísluje jinak
+    /// než jeho název) — po „Zařadit jako" do špatné složky (Bořiči mýtů) se jinak nová chyba nikdy neukázala.
+    /// Odmítnutý návrh zůstává odmítnutý.
+    /// </summary>
+    public static bool Reopens(Suggestion old, Suggestion found) =>
+        old.Status == "done"
+        && found.Kind is "episode" or "duplicate"
+        && found.Versions.Any(v => v.Suspect != null && old.Versions.All(o => o.Path != v.Path));
 
     /// <summary>
     /// Průběžné uložení jednoho návrhu během kontroly (ať se nalezené lepší verze neztratí, když

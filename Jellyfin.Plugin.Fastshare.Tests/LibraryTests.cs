@@ -90,6 +90,28 @@ public sealed class LibraryTests : IDisposable
     }
 
     [Fact]
+    public void DoneEpisodeReopensWhenNewMismatchedFileAppears()
+    {
+        var store = new SuggestionStore(Path.Combine(_root, "r.json"), _ => { });
+        LibraryVersion V(string p, string? suspect = null) => new() { Path = p, Suspect = suspect };
+        store.Merge([new Suggestion { Id = "ep:1", Kind = "episode", Title = "B", Versions = [V("/s/a.avi"), V("/s/b.avi", "podle názvu…")] }], ["episode"]);
+        store.Update("ep:1", s => { s.Status = "done"; s.Versions = [V("/s/a.avi")]; }); // „Zařadit jako" b.avi přesunulo
+
+        // stejné soubory → zůstane vyřízený
+        store.Merge([new Suggestion { Id = "ep:1", Kind = "episode", Title = "B", Versions = [V("/s/a.avi")] }], ["episode"]);
+        Assert.Equal("done", store.Get("ep:1")!.Status);
+
+        // přesunutý soubor Jellyfin zase čísluje jako tenhle díl → návrh se vrátí
+        store.Merge([new Suggestion { Id = "ep:1", Kind = "episode", Title = "B", Versions = [V("/s/a.avi"), V("/s/1.Serie/Season 05/b.avi", "podle názvu…")] }], ["episode"]);
+        Assert.Equal("new", store.Get("ep:1")!.Status);
+
+        // odmítnutý zůstane odmítnutý
+        store.Update("ep:1", s => s.Status = "rejected");
+        store.Merge([new Suggestion { Id = "ep:1", Kind = "episode", Title = "B", Versions = [V("/s/c.avi", "podle názvu…")] }], ["episode"]);
+        Assert.Equal("rejected", store.Get("ep:1")!.Status);
+    }
+
+    [Fact]
     public void UpsertKeepsDecisionAndSurvivesInterruptedRun()
     {
         var store = new SuggestionStore(Path.Combine(_root, "u.json"), _ => { });
