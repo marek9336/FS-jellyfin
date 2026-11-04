@@ -592,6 +592,12 @@ public static class FileNameParser
         var sb = new StringBuilder(s.Length);
         foreach (var c in s)
         {
+            if (char.IsSurrogate(c))
+            {
+                sb.Append(c); // půlka znaku mimo BMP (emoji, rozbitý tag) — Normalize by spadl na neplatném znaku
+                continue;
+            }
+
             var d = c.ToString().Normalize(NormalizationForm.FormD);
             var baseChar = d.FirstOrDefault(ch => CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark);
             sb.Append(d.Length > 0 && baseChar != default ? baseChar : c);

@@ -12,6 +12,12 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   opravdu soubor (Fastshare bez přihlášení vrací prázdnou odpověď).
 - **⛔ STOP** v hlavičce: okamžitě zastaví všechna stahování a jakékoli spojení na Fastshare (kontrola, hlídač, ruční
   hledání, přihlášení), dokud ho nepovolíš — pro jistotu při podezření na ban. Stažené části se po povolení navážou.
+- **🎵 Hudba** (jen lokálně — nic se nehledá na internetu ani na Fastshare): duplicity (bajtově stejné soubory a ověřené kopie
+  téže skladby ve stejné složce předem zaškrtnuté; stejná skladba na různých albech jen pro informaci), skladby bez tagů
+  s odhadem interpreta / alba / roku / čísla / názvu z cesty („Interpret - Album (rok)/01 - Název.mp3“) k úpravě a zápisu,
+  rozbitá diakritika v tagech (cp1250 čtené jako latin-1: „Tøi Sestry“ → „Tři Sestry“), nízký datový tok, smetí (.cda).
+  Tagy se zapisují jen do Jellyfinu (soubory se nemění) a skladba se zamkne, ať ji sken nepřepíše. Mazání skladby nikdy
+  nesmaže složku alba. ▶ přehrát, velikost a uvolněné místo u každé karty, řazení podle úspory.
 - **Navržené**: 📂 *Projít knihovnu* = jen soubory na disku (duplicity, bez metadat, čísla dílů, filmy v seriálech, chybějící
   díly podle TMDb), na Fastshare se nic nehledá; 🔎 *Hledat verze na Fastshare* = totéž a pak hledání lepších a chybějících
   verzí po stropu a v okně. Rozběhnuté hledání průchod knihovnou nezastaví ani nezopakuje.

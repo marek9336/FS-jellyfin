@@ -43,6 +43,12 @@
         #FsConfigPage .fs-week td { padding:.2em .5em; }
         #FsConfigPage h2 { margin:1.2em 0 .5em; }
         #FsConfigPage .fs-msg { margin:.5em 0; font-size:.92em; }
+        #FsConfigPage .m-tbl { width:100%; border-collapse:collapse; font-size:.86em; margin-top:.4em; }
+        #FsConfigPage .m-tbl td, #FsConfigPage .m-tbl th { padding:.2em .35em; border-bottom:1px solid #2a2a2a; vertical-align:middle; text-align:left; }
+        #FsConfigPage .m-tbl input[type=text], #FsConfigPage .m-tbl input[type=number] { background:#111; color:#eee; border:1px solid #333; border-radius:3px; padding:.15em .3em; width:100%; box-sizing:border-box; }
+        #FsConfigPage .m-tbl .m-path { opacity:.7; word-break:break-all; }
+        #FsConfigPage .m-all { background:#111; color:#eee; border:1px solid #333; border-radius:3px; padding:.2em .35em; }
+        #FsConfigPage .m-play { text-decoration:none; }
     </style>
     <div data-role="content">
         <div class="content-primary">
@@ -54,6 +60,7 @@
                     <button is="emby-button" type="button" class="raised fs-tab-btn" data-tab="fsTabQueue">⬇️ Fronta</button>
                     <button is="emby-button" type="button" class="raised fs-tab-btn" data-tab="fsTabWatch">👁 Hlídané</button>
                     <button is="emby-button" type="button" class="raised fs-tab-btn" data-tab="fsTabSuggest">💡 Navržené</button>
+                    <button is="emby-button" type="button" class="raised fs-tab-btn" data-tab="fsTabMusic">🎵 Hudba</button>
                     <button is="emby-button" type="button" class="raised fs-tab-btn" data-tab="fsTabSettings">⚙️ Nastavení</button>
                     <button is="emby-button" type="button" id="fsStopBtn" class="raised" style="margin-left:auto; background:#b71c1c; color:#fff;"
                         title="Okamžitě zastaví veškeré stahování i hledání na Fastshare, dokud ho znovu nepovolíš (pro jistotu při podezření na ban)"><span>⛔ STOP</span></button>
@@ -209,6 +216,31 @@
                 <div id="fsSugList"></div>
             </div>
 
+            <!-- ═══════════ HUDBA ═══════════ -->
+            <div id="fsTabMusic" class="fs-tab verticalSection hide">
+                <div class="fs-card">
+                    <div id="fsMusStatus">Načítám…</div>
+                    <div style="display:flex; gap:.5em; flex-wrap:wrap; margin-top:.7em;">
+                        <button is="emby-button" type="button" id="fsMusScan" class="raised button-submit" title="Projde skladby v Jellyfinu a soubory na disku — nic se nehledá na internetu ani na Fastshare"><span>📂 Projít hudbu</span></button>
+                        <button is="emby-button" type="button" id="fsMusBulkDel" class="raised" title="Smaže bajtově stejné kopie, kopie téže skladby ve stejné složce (ověřené i podle jména souboru) a smetí (.cda…). Z každé duplicity jedna zůstane."><span>🗑 Smazat jisté duplicity a smetí</span></button>
+                        <button is="emby-button" type="button" id="fsMusBulkChar" class="raised" title="Opraví rozbitou diakritiku (Tøi Sestry → Tři Sestry) ve všech skladbách"><span>🔤 Opravit diakritiku</span></button>
+                        <button is="emby-button" type="button" id="fsMusBulkMeta" class="raised" title="Zapíše jisté odhady tagů (Interpret - Název v souboru, složka Interpret - Album). Nejisté zůstanou na kontrolu."><span>🏷 Zapsat jisté tagy</span></button>
+                    </div>
+                    <div class="fieldDescription" style="margin-top:.6em;">
+                        Jen lokálně: soubory na disku a tagy v Jellyfinu. Tagy se zapisují <b>jen do Jellyfinu</b> (soubory zůstanou netknuté) a skladba se zamkne,
+                        ať ji sken nepřepíše. Stejná skladba na různých albech (výběrovka × původní album) se jen ukazuje — nic není předem zaškrtnuté.
+                    </div>
+                </div>
+                <div style="display:flex; gap:.4em; flex-wrap:wrap; margin-bottom:.6em; align-items:center;" id="fsMusFilters"></div>
+                <div style="display:flex; gap:.8em; flex-wrap:wrap; align-items:center; margin-bottom:.6em;">
+                    <label style="font-size:.9em;">Řadit: <select id="fsMusSort" style="background:#1c1c1c; color:#eee; border:1px solid #333; padding:.2em;">
+                        <option value="savings">💾 podle úspory</option><option value="count">podle počtu skladeb</option><option value="name">podle názvu</option></select></label>
+                    <label style="font-size:.9em;"><input type="checkbox" id="fsMusHideCross" checked /> skrýt stejné skladby na různých albech</label>
+                    <input type="text" id="fsMusFind" placeholder="Hledat interpreta / složku…" style="background:#1c1c1c; color:#eee; border:1px solid #333; padding:.25em .4em; min-width:14em;" />
+                </div>
+                <div id="fsMusList"></div>
+            </div>
+
             <!-- ═══════════ NASTAVENÍ ═══════════ -->
             <div id="fsTabSettings" class="fs-tab verticalSection hide">
                 <form id="fsConfigForm">
@@ -280,6 +312,7 @@
                     <h2>Navržené</h2>
                     <div class="fs-grid">
                         <div class="inputContainer"><input is="emby-input" type="number" id="cfgSuggestIntervalDays" label="Projít knihovnu sama každých (dní, 0 = jen ručně)" min="0" /></div>
+                        <div class="inputContainer"><input is="emby-input" type="number" id="cfgMusicMinBitrateKbps" label="Hudba: nízká kvalita pod (kb/s, 0 = nehlídat)" min="0" max="512" /></div>
                         <div class="selectContainer"><select is="emby-select" id="cfgSuggestTargetQuality" label="Navrhovat lepší verzi do">
                             <option value="720p">720p</option><option value="1080p">1080p (Full HD)</option></select></div>
                         <div class="inputContainer"><input is="emby-input" type="number" id="cfgSuggestRecheckDays" label="Znovu hledat po (dní)" min="1" /></div>
@@ -477,6 +510,7 @@
             if (tabId === 'fsTabQueue') { refreshQueue(); startQueueTimer(); } else { stopQueueTimer(); }
             if (tabId === 'fsTabWatch') { renderWatch(); }
             if (tabId === 'fsTabSuggest') { loadSuggest(false); startSugTimer(); } else { stopSugTimer(); }
+            if (tabId === 'fsTabMusic') { loadMusic(); } else { stopMusicTimer(); }
         }
 
         function startQueueTimer() { stopQueueTimer(); queueTimer = setInterval(refreshQueue, 3000); }
@@ -2039,12 +2073,181 @@
         el('fsSugRefresh').addEventListener('click', function () { loadSuggest(false); });
         el('fsSugStop').addEventListener('click', function () { api('POST', 'Suggestions/Stop').then(function () { setTimeout(function () { loadSuggest(false); }, 800); }); });
 
+        // ── Hudba ────────────────────────────────────────────────
+        var musData = null, musFilter = 'dup', musLimit = 40, musTimer = null;
+        var MUS_KINDS = [
+            { k: 'dup', label: '👯 Duplicity', kinds: ['same', 'song'] },
+            { k: 'meta', label: '🏷 Bez tagů', kinds: ['meta'] },
+            { k: 'charset', label: '🔤 Diakritika', kinds: ['charset'] },
+            { k: 'low', label: '📉 Nízká kvalita', kinds: ['low'] },
+            { k: 'junk', label: '🧹 Smetí', kinds: ['junk'] },
+        ];
+        function stopMusicTimer() { if (musTimer) { clearInterval(musTimer); musTimer = null; } }
+        function loadMusic() {
+            api('GET', 'Music').then(function (d) {
+                musData = d;
+                renderMusic();
+                stopMusicTimer();
+                if (d.status.running) musTimer = setInterval(function () { if (document.body.contains(page)) loadMusic(); else stopMusicTimer(); }, 3000);
+            }, function () { el('fsMusStatus').textContent = '❌ Stav hudby se nepodařilo načíst.'; });
+        }
+        function fmtMin(sec) { return sec ? Math.floor(sec / 60) + ':' + ('0' + (sec % 60)).slice(-2) : '?'; }
+        function relPath(p) { return String(p || '').replace(/^\/[^/]+\//, ''); }
+        function musPlay(id) {
+            if (!id) return '';
+            return '<a class="m-play" target="_blank" rel="noopener" title="Otevřít v Jellyfinu a přehrát" href="' + location.pathname + '#/details?id=' + encodeURIComponent(id) + '&serverId=' + encodeURIComponent(ApiClient.serverId()) + '">▶</a>';
+        }
+        function musCards() {
+            var f = MUS_KINDS.filter(function (x) { return x.k === musFilter; })[0];
+            var q = (el('fsMusFind').value || '').toLowerCase();
+            var list = (musData.items || []).filter(function (x) {
+                if (f.kinds.indexOf(x.kind) < 0) return false;
+                if (musFilter === 'dup' && el('fsMusHideCross').checked && x.crossAlbum) return false;
+                if (q && (x.title + ' ' + x.tracks.map(function (t) { return t.path; }).join(' ')).toLowerCase().indexOf(q) < 0) return false;
+                return true;
+            });
+            var sort = el('fsMusSort').value;
+            list.sort(function (a, b) {
+                if (sort === 'savings') return (b.savings - a.savings) || (b.size - a.size);
+                if (sort === 'count') return b.tracks.length - a.tracks.length;
+                return a.title.localeCompare(b.title, 'cs');
+            });
+            return list;
+        }
+        function renderMusic() {
+            var d = musData, st = d.status, c = d.counts || {};
+            function cnt(k) { return c[k] || { cards: 0, tracks: 0, savings: 0 }; }
+            el('fsMusStatus').innerHTML = st.running ? '⏳ ' + esc(st.phase || 'Procházím hudbu…')
+                : st.lastRunUtc ? 'Naposledy ' + fmtLocal(st.lastRunUtc) + ': ' + esc(st.lastResult || '') : 'Hudba zatím nebyla procházena — klikni na 📂 Projít hudbu.';
+            var sure = (d.items || []).filter(function (x) { return x.kind === 'meta'; }).reduce(function (n, x) { return n + x.tags.filter(function (t) { return t.sure; }).length; }, 0);
+            var delN = 0, delB = 0;
+            (d.items || []).forEach(function (x) {
+                if (x.kind === 'junk' || ((x.kind === 'same' || x.kind === 'song') && x.deletePaths.length)) { delN += x.deletePaths.length; delB += x.savings; }
+            });
+            el('fsMusBulkDel').querySelector('span').textContent = '🗑 Smazat jisté duplicity a smetí (' + delN + ', ' + fmtBytes(delB) + ')';
+            el('fsMusBulkDel').disabled = !delN || st.running;
+            el('fsMusBulkChar').querySelector('span').textContent = '🔤 Opravit diakritiku (' + cnt('charset').tracks + ')';
+            el('fsMusBulkChar').disabled = !cnt('charset').tracks || st.running;
+            el('fsMusBulkMeta').querySelector('span').textContent = '🏷 Zapsat jisté tagy (' + sure + ')';
+            el('fsMusBulkMeta').disabled = !sure || st.running;
+            el('fsMusFilters').innerHTML = MUS_KINDS.map(function (f) {
+                var n = f.kinds.reduce(function (a, k) { return a + (f.k === 'dup' ? cnt(k).cards : cnt(k).tracks); }, 0);
+                return '<button is="emby-button" type="button" class="raised fs-btn m-f' + (f.k === musFilter ? ' button-submit' : '') + '" data-k="' + f.k + '">' + f.label + ' (' + n + ')</button>';
+            }).join('');
+            el('fsMusFilters').querySelectorAll('.m-f').forEach(function (b) {
+                b.addEventListener('click', function () { musFilter = b.getAttribute('data-k'); musLimit = 40; renderMusic(); });
+            });
+            var list = musCards();
+            var html = list.slice(0, musLimit).map(musCard).join('');
+            if (list.length > musLimit) html += '<button is="emby-button" type="button" class="raised fs-btn" id="fsMusMore">Zobrazit další (' + (list.length - musLimit) + ')</button>';
+            el('fsMusList').innerHTML = html || '<div class="fs-msg" style="opacity:.6;">Nic.</div>';
+            if (el('fsMusMore')) el('fsMusMore').addEventListener('click', function () { musLimit += 40; renderMusic(); });
+            bindMusic();
+        }
+        function musCard(x) {
+            var head = '<div class="fs-name">' + esc(x.title) + '</div><div>';
+            var body = '', btns = '';
+            if (x.kind === 'same' || x.kind === 'song' || x.kind === 'junk' || x.kind === 'low') {
+                head += x.kind === 'same' ? '<span class="fs-badge fs-b-ok">bajtově stejné</span>'
+                    : x.kind === 'song' ? (x.crossAlbum ? '<span class="fs-badge">na různých albech</span>' : '<span class="fs-badge fs-b-q">stejná skladba</span>')
+                    : x.kind === 'junk' ? '<span class="fs-badge fs-b-warn">nehraje</span>' : '<span class="fs-badge fs-b-warn">nízký tok</span>';
+                head += '<span class="fs-badge">' + x.tracks.length + '× · ' + fmtBytes(x.size) + '</span>'
+                    + (x.savings ? '<span class="fs-badge fs-b-ok">💾 uvolní ' + fmtBytes(x.savings) + '</span>' : '');
+                var rows = x.kind === 'low' ? x.tracks.slice(0, 200) : x.tracks;
+                body = '<table class="m-tbl"><tr><th></th><th>soubor</th><th>tok</th><th>délka</th><th>velikost</th><th></th></tr>' + rows.map(function (t, i) {
+                    var checked = x.deletePaths.indexOf(t.path) >= 0;
+                    return '<tr><td><input type="checkbox" class="m-del" data-path="' + esc(t.path) + '"' + (checked ? ' checked' : '') + ' title="Smazat"></td>'
+                        + '<td><div>' + esc(t.artist ? t.artist + ' – ' + t.title : t.title) + (x.kind !== 'junk' && i === 0 && x.kind !== 'low' ? ' <span class="fs-badge fs-b-ok">nejlepší</span>' : '') + '</div><div class="m-path">' + esc(relPath(t.path)) + '</div></td>'
+                        + '<td>' + (t.bitrate ? Math.round(t.bitrate / 1000) + ' kb/s' : '?') + '</td><td>' + fmtMin(t.duration) + '</td><td>' + fmtBytes(t.size) + '</td><td>' + musPlay(t.itemId) + '</td></tr>';
+                }).join('') + '</table>' + (x.kind === 'low' && x.tracks.length > 200 ? '<div class="fs-sub">… a dalších ' + (x.tracks.length - 200) + '</div>' : '');
+                btns = '<button is="emby-button" type="button" class="raised fs-btn m-act" data-act="del">🗑 Smazat zaškrtnuté</button>';
+            } else {
+                head += '<span class="fs-badge">' + cz(x.tracks.length, 'skladba', 'skladby', 'skladeb') + '</span>'
+                    + (x.kind === 'charset' ? '<span class="fs-badge fs-b-q">oprava diakritiky</span>' : '<span class="fs-badge">' + x.tags.filter(function (t) { return t.sure; }).length + ' jistých</span>');
+                var tracks = {};
+                x.tracks.forEach(function (t) { tracks[t.path] = t; });
+                body = '<div class="fs-form" style="padding:.4em .6em;">Pro všechny: <input type="text" class="m-all" data-f="artist" placeholder="interpret" style="max-width:14em;"> '
+                    + '<input type="text" class="m-all" data-f="album" placeholder="album" style="max-width:14em;"> <input type="number" class="m-all" data-f="year" placeholder="rok" style="max-width:6em;"></div>'
+                    + '<table class="m-tbl"><tr><th><input type="checkbox" class="m-chkall" checked title="Vše"></th><th>#</th><th>interpret</th><th>název</th><th>album</th><th>rok</th><th>teď v Jellyfinu</th><th></th></tr>'
+                    + x.tags.map(function (g) {
+                        var t = tracks[g.path] || {};
+                        return '<tr data-path="' + esc(g.path) + '"><td><input type="checkbox" class="m-use"' + (g.title || g.artist ? ' checked' : '') + '></td>'
+                            + '<td style="width:3.5em;"><input type="number" class="m-v" data-f="trackNo" value="' + (g.trackNo || '') + '"></td>'
+                            + '<td><input type="text" class="m-v" data-f="artist" value="' + esc(g.artist || '') + '"></td>'
+                            + '<td><input type="text" class="m-v" data-f="title" value="' + esc(g.title || '') + '" placeholder="' + (g.title ? '' : 'nejde vyčíst — doplň') + '"></td>'
+                            + '<td><input type="text" class="m-v" data-f="album" value="' + esc(g.album || '') + '"></td>'
+                            + '<td style="width:5em;"><input type="number" class="m-v" data-f="year" value="' + (g.year || '') + '"></td>'
+                            + '<td class="m-path" title="' + esc(g.how || '') + '">' + (g.sure ? '✔ ' : '? ') + esc((t.artist ? t.artist + ' – ' : '') + (t.title || '')) + '<br>' + esc(relPath(g.path).split('/').pop()) + '</td>'
+                            + '<td>' + musPlay(t.itemId) + '</td></tr>';
+                    }).join('') + '</table>';
+                btns = '<button is="emby-button" type="button" class="raised button-submit fs-btn m-act" data-act="apply">✅ Zapsat zaškrtnuté do Jellyfinu</button>';
+            }
+            head += '</div>' + (x.note ? '<div class="fs-sub">' + esc(x.note) + '</div>' : '');
+            return '<div class="fs-row m-card" data-id="' + esc(x.id) + '" style="display:block;"><div class="fs-main">' + head + body
+                + '<div style="display:flex; gap:.4em; flex-wrap:wrap; margin-top:.5em;">' + btns
+                + '<button is="emby-button" type="button" class="raised fs-btn m-act" data-act="reject" title="Při další kontrole se nevrátí">✋ Nechat být</button></div></div></div>';
+        }
+        function bindMusic() {
+            el('fsMusList').querySelectorAll('.m-card').forEach(function (card) {
+                var id = card.getAttribute('data-id');
+                card.querySelectorAll('.m-all').forEach(function (inp) {
+                    inp.addEventListener('input', function () {
+                        var f = inp.getAttribute('data-f');
+                        card.querySelectorAll('.m-v[data-f="' + f + '"]').forEach(function (v) { v.value = inp.value; });
+                    });
+                });
+                var all = card.querySelector('.m-chkall');
+                if (all) all.addEventListener('change', function () { card.querySelectorAll('.m-use').forEach(function (c) { c.checked = all.checked; }); });
+                card.querySelectorAll('.m-act').forEach(function (b) {
+                    b.addEventListener('click', function () {
+                        var act = b.getAttribute('data-act');
+                        if (act === 'reject') { api('POST', 'Music/Reject', { Id: id }).then(loadMusic); return; }
+                        if (act === 'del') {
+                            var paths = Array.from(card.querySelectorAll('.m-del:checked')).map(function (c) { return c.getAttribute('data-path'); });
+                            if (!paths.length) { toast('⚠️ Nic není zaškrtnuté.', 'warn'); return; }
+                            if (!confirm('Smazat z disku ' + paths.length + ' ' + (paths.length === 1 ? 'soubor' : paths.length < 5 ? 'soubory' : 'souborů') + '?\n\n' + paths.slice(0, 15).map(relPath).join('\n') + (paths.length > 15 ? '\n…' : '') + '\n\nNejde vrátit.')) return;
+                            api('POST', 'Music/Delete', { Id: id, Paths: paths }).then(loadMusic, loadMusic);
+                            return;
+                        }
+                        var tags = Array.from(card.querySelectorAll('tr[data-path]')).filter(function (r) { return r.querySelector('.m-use').checked; }).map(function (r) {
+                            var o = { Path: r.getAttribute('data-path') };
+                            r.querySelectorAll('.m-v').forEach(function (v) {
+                                var f = v.getAttribute('data-f'), val = v.value.trim();
+                                if (f === 'trackNo') o.TrackNo = val ? parseInt(val, 10) : null;
+                                else if (f === 'year') o.Year = val ? parseInt(val, 10) : null;
+                                else o[f.charAt(0).toUpperCase() + f.slice(1)] = val || null;
+                            });
+                            return o;
+                        });
+                        if (!tags.length) { toast('⚠️ Nic není zaškrtnuté.', 'warn'); return; }
+                        api('POST', 'Music/Apply', { Id: id, Tags: tags }).then(loadMusic, loadMusic);
+                    });
+                });
+            });
+        }
+        el('fsMusScan').addEventListener('click', function () { api('POST', 'Music/Scan').then(function () { setTimeout(loadMusic, 800); }); });
+        el('fsMusBulkDel').addEventListener('click', function () {
+            if (!confirm('Smazat z disku bajtově stejné kopie, ověřené kopie téže skladby ve stejné složce a smetí (.cda)? Z každé duplicity zůstane ta nejlepší. Nejde vrátit.')) return;
+            api('POST', 'Music/BulkDelete', { Kinds: ['same', 'song', 'junk'] }).then(loadMusic, loadMusic);
+        });
+        el('fsMusBulkChar').addEventListener('click', function () {
+            if (!confirm('Opravit rozbitou diakritiku ve všech navržených skladbách (zapíše se do Jellyfinu, soubory se nemění)?')) return;
+            api('POST', 'Music/BulkApply', { Kind: 'charset' }).then(loadMusic, loadMusic);
+        });
+        el('fsMusBulkMeta').addEventListener('click', function () {
+            if (!confirm('Zapsat do Jellyfinu všechny jisté odhady tagů? Nejisté zůstanou na kontrolu.')) return;
+            api('POST', 'Music/BulkApply', { Kind: 'meta' }).then(loadMusic, loadMusic);
+        });
+        el('fsMusSort').addEventListener('change', renderMusic);
+        el('fsMusHideCross').addEventListener('change', renderMusic);
+        el('fsMusFind').addEventListener('input', function () { musLimit = 40; renderMusic(); });
+
         // ── Nastavení ────────────────────────────────────────────
         var cfgText = ['FastshareUsername', 'FastsharePassword', 'MoviesPath', 'SeriesPath', 'WindowExtraRanges', 'SearchHours', 'SuggestTargetQuality',
             'PreferredLang1', 'PreferredLang2', 'PreferredLang3', 'CodecPreference', 'UnknownLangAs', 'MaxQuality', 'HdrMode', 'DvMode'];
         var cfgNum = ['MinFreeSpaceGb', 'MaxParallelDownloads', 'SpeedLimitMbps', 'PauseBetweenSeconds', 'DailyCapGb', 'RetryAttempts',
             'DuplicateSizeTolerancePercent', 'WindowFromHour', 'WindowToHour', 'MaxMovieSizeGb', 'MaxEpisodeSizeGb', 'MaxBitrateMbps', 'MinMovieSizeMb', 'MinEpisodeSizeMb', 'SmallerMinSavingsPercent',
-            'WatchDefaultIntervalDays', 'WatchSearchPages', 'SuggestIntervalDays', 'SuggestRecheckDays', 'AutoSearchesPerHour'];
+            'WatchDefaultIntervalDays', 'WatchSearchPages', 'SuggestIntervalDays', 'SuggestRecheckDays', 'AutoSearchesPerHour', 'MusicMinBitrateKbps'];
         var cfgBool = ['ShowAdult', 'TriggerLibraryScan', 'UseWeeklyWindow', 'StopAtWindowEnd', 'PreferSubsWhenForeign', 'SkipWithoutPreferredLang', 'PreferSmallerFiles', 'SearchSmallerVersions', 'AutoDownloadSmaller', 'AutoReplaceSmaller'];
 
         function renderWeek(spec) {

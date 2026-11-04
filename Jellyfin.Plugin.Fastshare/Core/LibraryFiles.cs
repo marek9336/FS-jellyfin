@@ -368,6 +368,43 @@ public static class LibraryFiles
         return SeasonDir(series, season, preferred, children);
     }
 
+    /// <summary>
+    /// Smaže skladbu (a její .lrc se stejným jménem). Na rozdíl od <see cref="DeleteVideo"/> nikdy nemaže složku s dalšími
+    /// soubory — složka alba bez „videa" je u hudby normální; prázdná složka se smaže.
+    /// </summary>
+    public static List<string> DeleteAudio(string path, IReadOnlyCollection<string> libraryRoots)
+    {
+        if (!IsInsideLibrary(path, libraryRoots))
+        {
+            throw new InvalidOperationException("Soubor není v žádné knihovně Jellyfinu, nemažu ho: " + path);
+        }
+
+        var deleted = new List<string>();
+        if (!File.Exists(path))
+        {
+            return deleted;
+        }
+
+        var dir = Path.GetDirectoryName(path)!;
+        File.Delete(path);
+        deleted.Add(path);
+        var lrc = Path.Combine(dir, Path.GetFileNameWithoutExtension(path) + ".lrc");
+        if (File.Exists(lrc))
+        {
+            File.Delete(lrc);
+            deleted.Add(lrc);
+        }
+
+        var isRoot = libraryRoots.Any(r => string.Equals(
+            Path.GetFullPath(r).TrimEnd(Path.DirectorySeparatorChar), Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar), StringComparison.Ordinal));
+        if (!isRoot && Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
+        {
+            Directory.Delete(dir);
+        }
+
+        return deleted;
+    }
+
     /// <summary>Leží cesta uvnitř některé knihovny (a není to knihovna sama)?</summary>
     public static bool IsInsideLibrary(string path, IEnumerable<string> libraryRoots)
     {

@@ -158,4 +158,7 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Kolik stránek výsledků hledání projít při kontrole (200 souborů na stránku).</summary>
     public int WatchSearchPages { get; set; } = 3;
+
+    /// <summary>Hudba: skladby pod tímhle datovým tokem (kb/s) jsou v Navržených jako nízká kvalita. 0 = nehlídat.</summary>
+    public int MusicMinBitrateKbps { get; set; } = 128;
 }

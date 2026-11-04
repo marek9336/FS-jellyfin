@@ -15,6 +15,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<IHostedService, DownloadWorkerService>();
         serviceCollection.AddSingleton<IHostedService, WatcherService>();
         serviceCollection.AddSingleton<LibraryAdvisor>();
+        serviceCollection.AddSingleton<MusicAdvisor>();
         serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<LibraryAdvisor>());
     }
 }

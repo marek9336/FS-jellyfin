@@ -88,6 +88,7 @@ public sealed class FsState : IDisposable
         Queue = new DownloadQueue(Path.Combine(dataDir, "state.json"), Log);
         Watch = new WatchStore(Path.Combine(dataDir, "watchlist.json"), Log);
         Suggestions = new SuggestionStore(Path.Combine(dataDir, "suggestions.json"), Log);
+        Music = new MusicStore(Path.Combine(dataDir, "music.json"), Log);
 
         // Vlastní handler: bez správy cookies (jinak by HttpClient hlavičku Cookie
         // s přihlašovacím klíčem zahodil) a s přesměrováním na datový server.
@@ -131,6 +132,9 @@ public sealed class FsState : IDisposable
 
     /// <summary>Návrhy ze záložky Navržené (lepší verze, duplicity, bez metadat).</summary>
     public SuggestionStore Suggestions { get; }
+
+    /// <summary>Návrhy záložky Hudba.</summary>
+    public MusicStore Music { get; }
 
     public DownloadEngine Engine { get; }
 
