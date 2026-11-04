@@ -258,7 +258,17 @@ public static class LibraryFiles
         var dir = Path.GetDirectoryName(path)!;
         var oldBase = Path.GetFileNameWithoutExtension(path);
         var newBase = MediaOrganizer.Sanitize(string.IsNullOrWhiteSpace(newBaseName) ? oldBase : newBaseName);
-        var target = MediaOrganizer.EnsureUniquePath(Path.Combine(destDir, newBase + Path.GetExtension(path)));
+        var wanted = Path.Combine(destDir, newBase + Path.GetExtension(path));
+
+        // Soubor už je tam, kam má jít („Zařadit jako S03E07" u dílu, který tak už jmenuje): nepřesouvat sám na sebe —
+        // cíl by byl „obsazený" a vznikl by „S03E07 (2).avi" (Bořiči mýtů, 4. 11.). Jen smazat zastaralá metadata.
+        if (string.Equals(Path.GetFullPath(wanted), Path.GetFullPath(path), StringComparison.Ordinal))
+        {
+            DropStaleMetadata(dir, oldBase);
+            return path;
+        }
+
+        var target = MediaOrganizer.EnsureUniquePath(wanted);
         var finalBase = Path.GetFileNameWithoutExtension(target);
 
         // Mezi Filmy a Seriály (jiné připojení) se soubor kopíruje, u 4 GB i minuty. Kopie jde do skrytého
@@ -281,7 +291,9 @@ public static class LibraryFiles
 
         File.Move(temp, target);
 
-        // doprovodné soubory (titulky „Film.cs.srt", „Film.nfo") se stejným základem názvu
+        // doprovodné soubory (titulky „Film.cs.srt") se stejným základem názvu jdou s videem;
+        // .nfo a náhled dílu ne — popisují původní zařazení (S01E07) a Jellyfin je čte přednostně před názvem souboru
+        DropStaleMetadata(dir, oldBase);
         foreach (var f in Directory.EnumerateFiles(dir).ToList())
         {
             var name = Path.GetFileName(f);
@@ -299,7 +311,52 @@ public static class LibraryFiles
             }
         }
 
+        // náhledy pro posuvník (trickplay) patří k obrazu, ne k zařazení — přesunout, ať je Jellyfin negeneruje znovu
+        var trick = Path.Combine(dir, oldBase + ".trickplay");
+        var trickTarget = Path.Combine(destDir, finalBase + ".trickplay");
+        if (Directory.Exists(trick) && !Directory.Exists(trickTarget))
+        {
+            try
+            {
+                Directory.Move(trick, trickTarget);
+            }
+            catch (IOException)
+            {
+                // mezi připojeními Directory.Move nejde — Jellyfin si je vyrobí znovu
+            }
+        }
+
         return target;
+    }
+
+    /// <summary>
+    /// Smaže metadata, která Jellyfin u souboru uložil (Název.nfo, Název-thumb.jpg): po přejmenování / přečíslování by
+    /// tvrdila staré zařazení — Jellyfin bere řadu a díl z .nfo přednostně (Bořiči mýtů „S03E07" s &lt;season&gt;1&lt;/season&gt;).
+    /// Jellyfin je po obnově zapíše znovu, správně. Vrací smazané.
+    /// </summary>
+    public static List<string> DropStaleMetadata(string dir, string baseName)
+    {
+        var gone = new List<string>();
+        foreach (var name in new[] { baseName + ".nfo", baseName + "-thumb.jpg", baseName + "-thumb.png" })
+        {
+            var f = Path.Combine(dir, name);
+            try
+            {
+                if (File.Exists(f))
+                {
+                    File.Delete(f);
+                    gone.Add(f);
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return gone;
     }
 
     /// <summary>Složka seriálu = první úroveň pod kořenem knihovny („/Serialy/Bořiči mýtů"); mimo knihovnu null.</summary>

@@ -29,12 +29,25 @@ public class FsController : ControllerBase
     private readonly FsState _state;
     private readonly ILogger<FsController> _logger;
     private readonly MediaBrowser.Controller.Library.ILibraryManager _libraryManager;
+    private readonly EpisodeFixer _fixer;
 
-    public FsController(FsState state, ILogger<FsController> logger, MediaBrowser.Controller.Library.ILibraryManager libraryManager)
+    public FsController(FsState state, ILogger<FsController> logger, MediaBrowser.Controller.Library.ILibraryManager libraryManager, EpisodeFixer fixer)
     {
         _state = state;
         _logger = logger;
         _libraryManager = libraryManager;
+        _fixer = fixer;
+    }
+
+    /// <summary>
+    /// Zařazení dílu jako SxxEyy: přesun / přejmenování (bez starého .nfo) a když soubor už na místě byl, přečíslování
+    /// přímo v Jellyfinu — jinak by Jellyfin dál věřil starému zařazení a návrh by se vracel.
+    /// </summary>
+    private string MoveEpisode(string path, string dir, string name, int season, int episode)
+    {
+        var moved = LibraryFiles.MoveVideo(path, dir, name, Advisor.LibraryRoots());
+        _fixer.RenumberAsync(moved, season, episode, CancellationToken.None).GetAwaiter().GetResult();
+        return moved;
     }
 
     /// <summary>Po smazání souborů nechat Jellyfin knihovnu přenačíst (zmizí smazané položky).</summary>
@@ -1417,7 +1430,7 @@ public class FsController : ControllerBase
         return RunFileOp(
             new[] { "path:" + path },
             $"⏳ Přesouvám jako „{name}“…",
-            () => LibraryFiles.MoveVideo(path, dir, name, Advisor.LibraryRoots()),
+            () => MoveEpisode(path, dir, name, season, r.Episode.Value),
             moved => DropPathFromSuggestions(path, "Zařazeno jako " + Path.GetFileName(moved)));
     }
 
@@ -1504,7 +1517,7 @@ public class FsController : ControllerBase
         return RunFileOp(
             new[] { "sug:" + id, "path:" + path },
             $"⏳ Přesouvám jako „{name}“…",
-            () => LibraryFiles.MoveVideo(path, dir, name, Advisor.LibraryRoots()),
+            () => MoveEpisode(path, dir, name, season, episode.Value),
             moved => _state.Suggestions.Update(id, x =>
             {
                 x.Versions = x.Versions.Where(y => y.Path != path).ToList();
@@ -1801,7 +1814,7 @@ public class FsController : ControllerBase
                 var dir = dirs[t.Season] ?? LibraryFiles.SeasonDirOnDisk(t.Path, t.Season, null, roots) ?? Path.Combine(LibraryAdvisor.SeriesRoot(t.Path), $"Season {t.Season:D2}");
                 try
                 {
-                    var to = LibraryFiles.MoveVideo(t.Path, dir, EpName(series, t.Season, t.Episode), roots);
+                    var to = MoveEpisode(t.Path, dir, EpName(series, t.Season, t.Episode), t.Season, t.Episode);
                     moved++;
                     _state.Suggestions.Update(t.Sug.Id, x =>
                     {

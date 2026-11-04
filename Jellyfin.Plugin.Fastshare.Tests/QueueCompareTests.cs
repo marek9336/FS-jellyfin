@@ -118,3 +118,41 @@ public sealed class SeasonDirTests
         Assert.Equal(S + "/Season 00", LibraryFiles.SeasonDir(S, 0, null, [S + "/Speciály"]));
     }
 }
+
+public sealed class MoveVideoTests
+{
+    [Fact]
+    public void SamePathDoesNotMakeCopyAndDropsStaleNfo()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "fs-mv-" + Guid.NewGuid());
+        var season = Path.Combine(root, "Bořiči mýtů", "Season 03");
+        var other = Path.Combine(root, "Bořiči mýtů", "Season 04");
+        Directory.CreateDirectory(season);
+        try
+        {
+            var video = Path.Combine(season, "Bořiči mýtů - S03E07.avi");
+            File.WriteAllText(video, "v");
+            File.WriteAllText(Path.Combine(season, "Bořiči mýtů - S03E07.nfo"), "<season>1</season>");
+            File.WriteAllText(Path.Combine(season, "Bořiči mýtů - S03E07-thumb.jpg"), "t");
+            File.WriteAllText(Path.Combine(season, "Bořiči mýtů - S03E07.cs.srt"), "s");
+            Directory.CreateDirectory(Path.Combine(season, "Bořiči mýtů - S03E07.trickplay"));
+
+            // „Zařadit jako S03E07" u dílu, který už tak jmenuje → žádné „(2)", jen pryč se starým .nfo
+            Assert.Equal(video, LibraryFiles.MoveVideo(video, season, "Bořiči mýtů - S03E07", [root]));
+            Assert.Equal(new[] { "Bořiči mýtů - S03E07.avi", "Bořiči mýtů - S03E07.cs.srt" }, Directory.GetFiles(season).Select(Path.GetFileName).Order().ToArray());
+
+            // přesun jinam: titulky a trickplay jdou s videem, .nfo ne
+            File.WriteAllText(Path.Combine(season, "Bořiči mýtů - S03E07.nfo"), "<season>1</season>");
+            var moved = LibraryFiles.MoveVideo(video, other, "Bořiči mýtů - S04E07", [root]);
+            Assert.Equal(Path.Combine(other, "Bořiči mýtů - S04E07.avi"), moved);
+            Assert.True(File.Exists(Path.Combine(other, "Bořiči mýtů - S04E07.cs.srt")));
+            Assert.True(Directory.Exists(Path.Combine(other, "Bořiči mýtů - S04E07.trickplay")));
+            Assert.False(File.Exists(Path.Combine(other, "Bořiči mýtů - S04E07.nfo")));
+            Assert.False(File.Exists(Path.Combine(season, "Bořiči mýtů - S03E07.nfo")));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+}
