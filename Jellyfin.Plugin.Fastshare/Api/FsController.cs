@@ -899,6 +899,8 @@ public class FsController : ControllerBase
                 phase = st.Phase,
                 lastRunUtc = st.LastRunUtc ?? last.LastRunUtc,
                 lastResult = st.LastResult ?? last.LastResult,
+                lastSearchUtc = last.LastRunUtc,
+                searchPending = _state.Suggestions.RunPending,
             },
             series = _state.Suggestions.Series,
             // kandidáti návrhů, kteří už jsou ve frontě / stažení: FileId → stav
@@ -920,27 +922,52 @@ public class FsController : ControllerBase
 
     public sealed class ScanRequest
     {
-        /// <summary>Hledat lepší verze i u filmů kontrolovaných nedávno.</summary>
+        /// <summary>Hledat lepší verze i u filmů kontrolovaných nedávno (jen se Search).</summary>
         public bool Force { get; set; }
+
+        /// <summary>Hledat i na Fastshare. false = jen projít soubory v knihovně.</summary>
+        public bool Search { get; set; }
     }
 
+    /// <summary>
+    /// 📂 Projít knihovnu (výchozí): jen soubory na disku — duplicity, bez metadat, čísla dílů, chybějící díly podle TMDb;
+    /// na Fastshare se nic nehledá. 🔎 Hledat verze na Fastshare (`Search`): totéž a pak hledání lepších verzí po stropu.
+    /// </summary>
     [HttpPost("Suggestions/Scan")]
     public ActionResult Scan([FromBody] ScanRequest? r)
     {
-        var force = r?.Force == true;
+        var search = r?.Search == true;
+        var force = search && r?.Force == true;
         var cfg = Plugin.Instance?.Configuration;
         var win = _state.SearchGate.WindowText;
         var pace = _state.SearchGate.Paused
             ? "automatické hledání je vypnuté (strop 0)"
             : $"hledání na Fastshare jde po stropu {cfg?.AutoSearchesPerHour}/h{(win != null ? " v okně " + win : string.Empty)}";
-        if (Advisor.Start(force))
+        if (!search)
         {
-            return Ok(new { success = true, started = true, message = $"Kontrola spuštěna — nejdřív projde knihovnu (pár minut), pak {pace}." });
+            if (Advisor.Start(false, localOnly: true))
+            {
+                return Ok(new { success = true, started = true, message = "Procházím knihovnu — jen soubory na disku, na Fastshare se nic nehledá (pár minut)." });
+            }
+
+            if (Advisor.RunningLocalOnly)
+            {
+                return Ok(new { success = true, started = false, message = "Knihovna se už prochází." });
+            }
+
+            // běží hledání lepších verzí (spustil ho dřív termín nebo 🔎) → knihovnu načíst znovu, hledání pokračuje, kde skončilo;
+            // prohledané položky ani seriály se znovu nehledají, takže na Fastshare nejde nic navíc
+            Advisor.Restart(false);
+            return Ok(new { success = true, started = true, message = $"Hledání na Fastshare už běželo — knihovnu načítám znovu a hledání pokračuje, kde skončilo (nic navíc se nehledá); {pace}." });
         }
 
-        // už běží (často jen čeká na okno / strop hledání) → znovu načíst knihovnu, prohledané se nehledá znovu
+        if (Advisor.Start(force))
+        {
+            return Ok(new { success = true, started = true, message = $"Hledání spuštěno — nejdřív projde knihovnu (pár minut), pak {pace}." });
+        }
+
         Advisor.Restart(force);
-        return Ok(new { success = true, started = true, message = $"Kontrola už běžela — načítám knihovnu znovu (nové a smazané soubory), hledání pokračuje, kde skončilo; {pace}." });
+        return Ok(new { success = true, started = true, message = $"Kontrola už běžela — načítám knihovnu znovu, hledání pokračuje, kde skončilo; {pace}." });
     }
 
     [HttpPost("Suggestions/Stop")]
@@ -1384,7 +1411,7 @@ public class FsController : ControllerBase
         }
 
         var season = r.Season.Value;
-        var dir = Advisor.SeasonDirFor(seriesId, season) ?? Path.Combine(LibraryAdvisor.SeriesRoot(r.Path), $"Season {season:D2}");
+        var dir = Advisor.SeasonDirFor(seriesId, season) ?? LibraryFiles.SeasonDirOnDisk(r.Path, season, null, Advisor.LibraryRoots()) ?? Path.Combine(LibraryAdvisor.SeriesRoot(r.Path), $"Season {season:D2}");
         var name = EpName(sum?.Name ?? f.Value.Ep.SeriesName ?? "Seriál", season, r.Episode.Value);
         var path = r.Path;
         return RunFileOp(
@@ -1471,7 +1498,7 @@ public class FsController : ControllerBase
         }
 
         var season = r.Season is >= 0 ? r.Season.Value : v.FileSeason ?? s.Season ?? 1;
-        var dir = Advisor.SeasonDirFor(s.SeriesId, season) ?? Path.Combine(LibraryAdvisor.SeriesRoot(v.Path), $"Season {season:D2}");
+        var dir = Advisor.SeasonDirFor(s.SeriesId, season) ?? LibraryFiles.SeasonDirOnDisk(v.Path, season, null, Advisor.LibraryRoots()) ?? Path.Combine(LibraryAdvisor.SeriesRoot(v.Path), $"Season {season:D2}");
         var name = EpName(s.SeriesName ?? s.Title, season, episode.Value);
         var path = v.Path;
         return RunFileOp(
@@ -1740,20 +1767,25 @@ public class FsController : ControllerBase
     }
 
     /// <summary>
-    /// 🔧 Seriál: všechny neočíslované díly s jistým odhadem (TMDb díl zná a název souboru mu neodporuje)
-    /// přesunout a přejmenovat na „Seriál - SxxEyy". Nejisté odhady zůstanou na ruční kontrolu.
+    /// 🔧 Seriál: všechny neočíslované díly s jistým odhadem (TMDb díl zná a název souboru mu neodporuje) a díly, jejichž
+    /// název má celé SxxEyy, ale Jellyfin je čísluje jinak (ležely ve složce cizí řady), přesunout do správné složky řady
+    /// jako „Seriál - SxxEyy". Nejisté odhady zůstanou na ruční kontrolu.
     /// </summary>
+    /// <summary>Název souboru má celé SxxEyy a Jellyfin díl čísluje jinak (soubor ve špatné složce řady) → zařadit podle názvu.</summary>
+    private static bool RenumberByName(LibraryVersion v) =>
+        v.FileSeason != null && v.FileEpisode != null && v.Suspect != null && v.Suspect.StartsWith("podle názvu souboru", StringComparison.Ordinal);
+
     [HttpPost("Suggestions/Series/{seriesId}/FixGuessed")]
     public ActionResult FixGuessed([FromRoute] string seriesId)
     {
         var todo = _state.Suggestions.GetAll()
-            .Where(x => x.SeriesId == seriesId && x.Kind == "episode" && x.Status == "new" && x.Episode == null)
-            .SelectMany(x => x.Versions.Where(v => v.FileGuessSure && v.FileEpisode != null && System.IO.File.Exists(v.Path))
+            .Where(x => x.SeriesId == seriesId && x.Kind == "episode" && x.Status == "new")
+            .SelectMany(x => x.Versions.Where(v => (x.Episode == null ? v.FileGuessSure && v.FileEpisode != null : RenumberByName(v)) && System.IO.File.Exists(v.Path))
                 .Select(v => (Sug: x, Path: v.Path, Season: v.FileSeason ?? 1, Episode: v.FileEpisode!.Value)))
             .ToList();
         if (todo.Count == 0)
         {
-            return Ok(new { success = false, message = "Žádný díl s jistým odhadem." });
+            return Ok(new { success = false, message = "Žádný díl s jistým odhadem ani s jiným číslem v názvu souboru." });
         }
 
         var series = todo[0].Sug.SeriesName ?? todo[0].Sug.Title;
@@ -1766,7 +1798,7 @@ public class FsController : ControllerBase
             var failed = new List<string>();
             foreach (var t in todo)
             {
-                var dir = dirs[t.Season] ?? Path.Combine(LibraryAdvisor.SeriesRoot(t.Path), $"Season {t.Season:D2}");
+                var dir = dirs[t.Season] ?? LibraryFiles.SeasonDirOnDisk(t.Path, t.Season, null, roots) ?? Path.Combine(LibraryAdvisor.SeriesRoot(t.Path), $"Season {t.Season:D2}");
                 try
                 {
                     var to = LibraryFiles.MoveVideo(t.Path, dir, EpName(series, t.Season, t.Episode), roots);

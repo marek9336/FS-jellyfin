@@ -302,6 +302,72 @@ public static class LibraryFiles
         return target;
     }
 
+    /// <summary>Složka seriálu = první úroveň pod kořenem knihovny („/Serialy/Bořiči mýtů"); mimo knihovnu null.</summary>
+    public static string? SeriesFolder(string path, IEnumerable<string> libraryRoots)
+    {
+        var full = Path.GetFullPath(path);
+        foreach (var root in libraryRoots.Where(r => !string.IsNullOrWhiteSpace(r)))
+        {
+            var r = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+            if (full.StartsWith(r + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            {
+                var first = full[(r.Length + 1)..].Split(Path.DirectorySeparatorChar)[0];
+                return first.Length > 0 ? Path.Combine(r, first) : null;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Kam uložit díl řady `season`, aby ho Jellyfin očísloval podle názvu souboru: do složky seriálu, nebo do složky
+    /// té řady přímo pod ní. Hlubší složka nejde — Jellyfin bere za řadu složku hned pod seriálem, takže
+    /// „…/Všechny série/1.Serie/Season 05/X - S05E04.avi" je pro něj S01E04 (Bořiči mýtů, 4. 11.).
+    /// `preferred` = složka, kterou by díl dostal (vedle stávající verze); `childDirs` = podsložky seriálu.
+    /// </summary>
+    public static string SeasonDir(string seriesFolder, int season, string? preferred, IEnumerable<string> childDirs)
+    {
+        var root = Path.GetFullPath(seriesFolder).TrimEnd(Path.DirectorySeparatorChar);
+        if (!string.IsNullOrEmpty(preferred))
+        {
+            var p = Path.GetFullPath(preferred).TrimEnd(Path.DirectorySeparatorChar);
+            if (p == root
+                || (Path.GetDirectoryName(p) == root && EpisodeGuess.SeasonFromFolder(Path.GetFileName(p)) == season))
+            {
+                return p;
+            }
+        }
+
+        var existing = childDirs
+            .Select(d => Path.GetFullPath(d).TrimEnd(Path.DirectorySeparatorChar))
+            .Where(d => Path.GetDirectoryName(d) == root && EpisodeGuess.SeasonFromFolder(Path.GetFileName(d)) == season)
+            .OrderBy(d => d, StringComparer.Ordinal)
+            .FirstOrDefault();
+        return existing ?? Path.Combine(root, string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Season {season:D2}"));
+    }
+
+    /// <summary><see cref="SeasonDir(string,int,string?,IEnumerable{string})"/> s podsložkami z disku; mimo knihovnu vrátí `preferred`.</summary>
+    public static string? SeasonDirOnDisk(string anyPathInSeries, int season, string? preferred, IEnumerable<string> libraryRoots)
+    {
+        var series = SeriesFolder(anyPathInSeries, libraryRoots);
+        if (series == null)
+        {
+            return preferred;
+        }
+
+        IEnumerable<string> children;
+        try
+        {
+            children = Directory.Exists(series) ? Directory.GetDirectories(series) : Array.Empty<string>();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            children = Array.Empty<string>();
+        }
+
+        return SeasonDir(series, season, preferred, children);
+    }
+
     /// <summary>Leží cesta uvnitř některé knihovny (a není to knihovna sama)?</summary>
     public static bool IsInsideLibrary(string path, IEnumerable<string> libraryRoots)
     {

@@ -423,7 +423,26 @@ public sealed class DownloadWorkerService : BackgroundService
         var finalPath = MediaOrganizer.BuildTargetPath(cfg.MoviesPath, cfg.SeriesPath, item, extension);
         if (!string.IsNullOrEmpty(item.TargetDir))
         {
-            finalPath = Path.Combine(item.TargetDir, Path.GetFileName(finalPath));
+            var dir = item.TargetDir;
+            // díl zařazený do hlubší složky (…/1.Serie/Season 05) by Jellyfin očísloval podle vnější složky → složka řady přímo pod seriálem
+            var advisor = LibraryAdvisor.Instance;
+            if (item.MediaType == MediaKind.Episode && item.Season is int season && advisor != null)
+            {
+                var roots = advisor.LibraryRoots();
+                var series = LibraryFiles.SeriesFolder(dir, roots);
+                if (series != null && advisor.IsSeriesFolder(series))
+                {
+                    var fixedDir = LibraryFiles.SeasonDirOnDisk(dir, season, dir, roots) ?? dir;
+                    if (fixedDir != Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar))
+                    {
+                        _logger.LogInformation("Fastshare: \"{Title}\" do {Dir} místo {Old} (složka cizí řady)", DisplayTitle(item), fixedDir, dir);
+                    }
+
+                    dir = fixedDir;
+                }
+            }
+
+            finalPath = Path.Combine(dir, Path.GetFileName(finalPath));
         }
 
         if (!item.Overwrite)

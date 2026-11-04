@@ -90,3 +90,31 @@ public sealed class QueueCompareTests
         }
     }
 }
+
+public sealed class SeasonDirTests
+{
+    private const string S = "/Serialy/Bořiči mýtů";
+
+    [Fact]
+    public void SeriesFolderIsFirstLevelUnderLibrary()
+    {
+        Assert.Equal(S, LibraryFiles.SeriesFolder(S + "/Pack/1.Serie/Season 05/x.avi", ["/Serialy", "/Filmy"]));
+        Assert.Null(LibraryFiles.SeriesFolder("/jinde/x.avi", ["/Serialy"]));
+    }
+
+    [Fact]
+    public void NeverNestsIntoAnotherSeasonFolder()
+    {
+        // vedle stávající verze v „…/1.Serie" by z S05E04 Jellyfin udělal S01E04
+        Assert.Equal(S + "/Season 05", LibraryFiles.SeasonDir(S, 5, S + "/Bořiči mýtů -Všechny serie+Speciláy/1.Serie", [S + "/Bořiči mýtů -Všechny serie+Speciláy"]));
+        Assert.Equal(S + "/Season 05", LibraryFiles.SeasonDir(S, 5, S + "/Bořiči mýtů -Všechny serie+Speciláy/1.Serie/Season 05", []));
+        // existující složka té řady přímo pod seriálem se použije
+        Assert.Equal(S + "/5. serie", LibraryFiles.SeasonDir(S, 5, null, [S + "/1. serie", S + "/5. serie"]));
+        Assert.Equal(S + "/Season 02", LibraryFiles.SeasonDir(S, 2, S + "/Season 02", []));
+        // složka jiné řady přímo pod seriálem nesedí
+        Assert.Equal(S + "/Season 03", LibraryFiles.SeasonDir(S, 3, S + "/Season 02", []));
+        // díly přímo ve složce seriálu zůstanou
+        Assert.Equal(S, LibraryFiles.SeasonDir(S, 1, S, []));
+        Assert.Equal(S + "/Season 00", LibraryFiles.SeasonDir(S, 0, null, [S + "/Speciály"]));
+    }
+}

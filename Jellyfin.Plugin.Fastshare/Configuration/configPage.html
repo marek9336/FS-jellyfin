@@ -180,8 +180,9 @@
                     <div id="fsSugStatus">Načítám…</div>
                     <div class="fs-bar hide" id="fsSugBarWrap"><div id="fsSugBar"></div></div>
                     <div style="display:flex; gap:.5em; flex-wrap:wrap; margin-top:.7em;">
-                        <button is="emby-button" type="button" id="fsSugScan" class="raised button-submit" title="Projde filmy: duplicity, bez metadat a lepší verze (u filmů hledaných v posledních dnech přeskočí hledání)"><span>🔍 Projít knihovnu</span></button>
-                        <button is="emby-button" type="button" id="fsSugScanAll" class="raised" title="Hledá lepší verze znovu u všech filmů pod cílovou kvalitou — trvá dlouho (asi 2–3 s na film)"><span>↻ Hledat lepší verze u všech</span></button>
+                        <button is="emby-button" type="button" id="fsSugScan" class="raised button-submit" title="Jen soubory na disku: duplicity, bez metadat, špatně očíslované díly, filmy v seriálech, chybějící díly podle TMDb. Na Fastshare se nic nehledá."><span>📂 Projít knihovnu</span></button>
+                        <button is="emby-button" type="button" id="fsSugSearch" class="raised" title="Projde knihovnu a pak hledá lepší a chybějící verze na Fastshare — po stropu a v okně hledání z Nastavení. Nedávno prohledané přeskočí."><span>🔎 Hledat verze na Fastshare</span></button>
+                        <button is="emby-button" type="button" id="fsSugScanAll" class="raised" title="Hledá lepší verze znovu u všech filmů pod cílovou kvalitou, i nedávno prohledaných — trvá dlouho"><span>↻ Hledat znovu u všech</span></button>
                         <button is="emby-button" type="button" id="fsSugStop" class="raised hide"><span>⏹ Zastavit</span></button>
                     </div>
                     <div class="fieldDescription" style="margin-top:.6em;">
@@ -409,6 +410,12 @@
         }
 
         function pad2(n) { return ('0' + n).slice(-2); }
+
+        /// díl pro hromadné 🔧 Zařadit: neočíslovaný s jistým odhadem, nebo název s celým SxxEyy, které Jellyfin čísluje jinak (stejně jako server)
+        function fixable(e, v) {
+            return e.Episode == null ? !!(v.FileGuessSure && v.FileEpisode != null)
+                : v.FileSeason != null && v.FileEpisode != null && !!v.Suspect && v.Suspect.indexOf('podle názvu souboru') === 0;
+        }
 
         function epTag(s, e) { return 'S' + pad2(s) + 'E' + pad2(e); }
 
@@ -1289,7 +1296,9 @@
             var st = sugData.status;
             el('fsSugStatus').innerHTML = st.running
                 ? '⏳ ' + esc(st.phase || 'Kontroluji…') + (st.total ? ' — ' + st.done + ' z ' + st.total : '')
-                : (st.lastRunUtc ? 'Naposledy ' + fmtLocal(st.lastRunUtc) + ': ' + esc(st.lastResult || '') : 'Knihovna zatím nebyla kontrolována.');
+                : (st.lastRunUtc ? 'Naposledy ' + fmtLocal(st.lastRunUtc) + ': ' + esc(st.lastResult || '') : 'Knihovna zatím nebyla kontrolována.')
+                    + (st.lastSearchUtc ? '<br><span style="opacity:.7;">🔎 Hledání na Fastshare naposledy ' + fmtLocal(st.lastSearchUtc)
+                        + (st.searchPending ? ' — rozdělané hledání pokračuje samo (po stropu, v okně)' : '') + '</span>' : '');
             el('fsSugBarWrap').classList.toggle('hide', !st.running || !st.total);
             if (st.total) el('fsSugBar').style.width = Math.floor(st.done * 100 / st.total) + '%';
             el('fsSugStop').classList.toggle('hide', !st.running);
@@ -1443,7 +1452,7 @@
             var withC = eps.filter(function (e) { return e.Candidate; }).length;
             var guessed = [];
             eps.forEach(function (e) {
-                if (e.Episode == null && e.Status === 'new') e.Versions.forEach(function (v) { if (v.FileGuessSure && v.FileEpisode != null) guessed.push(v); });
+                if (e.Status === 'new') e.Versions.forEach(function (v) { if (fixable(e, v)) guessed.push(v); });
             });
             var sop = fileOp('series', sum.SeriesId);
             var missC = missing.filter(function (e) { return e.Candidate; }).length;
@@ -1470,7 +1479,7 @@
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="mergeTo" title="Všechny díly přesunout do jiného seriálu (třeba stejný seriál ve dvou složkách)">📺 Celý seriál do…</button>'
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="searchNow" title="Hledat lepší verze dílů' + (sum.FindMissing ? ' a chybějící díly' : '') + ' hned — seriál jde na začátek fronty">🔎 Hledat teď</button>'
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="rejectAll" title="Kvalita seriálu stačí — nenavrhovat jeho díly">✋ Celý seriál nechat</button>'
-                + (guessed.length ? '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="fixGuessed" title="Neočíslované díly s jistým odhadem přesunout a přejmenovat na „Seriál - SxxEyy“ (nejisté zůstanou)">🔧 Zařadit odhadnuté (' + guessed.length + ')</button>' : '')
+                + (guessed.length ? '<button is="emby-button" type="button" class="raised button-submit fs-btn s-series" data-act="fixGuessed" title="Přesunout do správné složky řady jako „Seriál - SxxEyy“: neočíslované díly s jistým odhadem a díly, jejichž název souboru má jiné SxxEyy, než jim dává Jellyfin (nejisté zůstanou)">🔧 Zařadit podle názvu / odhadu (' + guessed.length + ')</button>' : '')
                 + '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="deleteSeries" title="Smazat všechny díly seriálu z disku">🗑 Smazat celý seriál</button>'
                 + (sum.Missing ? '<button is="emby-button" type="button" class="raised fs-btn s-series" data-act="' + (sum.FindMissing ? 'missingOff' : 'missingOn') + '" title="Hledat chybějící díly na Fastshare v kvalitě ' + esc(sum.Target) + ' (když není, nejlepší nižší)">'
                     + (sum.FindMissing ? '⏹ Nedohledávat chybějící' : '🔍 Dohledat ' + sum.Missing + ' chybějících') + '</button>' : '')
@@ -1779,8 +1788,8 @@
             } else if (act === 'fixGuessed') {
                 var list = [];
                 (sugData.items || []).forEach(function (e) {
-                    if (e.SeriesId === sid && e.Kind === 'episode' && e.Status === 'new' && e.Episode == null)
-                        e.Versions.forEach(function (v) { if (v.FileGuessSure && v.FileEpisode != null) list.push(epTag(v.FileSeason != null ? v.FileSeason : 1, v.FileEpisode) + (v.FileEpisodeName ? ' „' + v.FileEpisodeName + '“' : '') + '  ←  ' + v.Path.split('/').pop()); });
+                    if (e.SeriesId === sid && e.Kind === 'episode' && e.Status === 'new')
+                        e.Versions.forEach(function (v) { if (fixable(e, v)) list.push(epTag(v.FileSeason != null ? v.FileSeason : 1, v.FileEpisode) + (v.FileEpisodeName ? ' „' + v.FileEpisodeName + '“' : '') + '  ←  ' + v.Path.split('/').pop()); });
                 });
                 list.sort();
                 if (!confirm('Zařadit ' + list.length + (list.length === 1 ? ' díl' : list.length < 5 ? ' díly' : ' dílů') + ' (přesun do složky řady a přejmenování)?\n\n' + list.slice(0, 25).join('\n') + (list.length > 25 ? '\n… a dalších ' + (list.length - 25) : ''))) return;
@@ -2016,10 +2025,14 @@
             }, function (xhr) { out.innerHTML = '<div class="fs-msg">❌ ' + esc(errMsg(xhr, 'Hledání selhalo.')) + '</div>'; });
         }
 
-        el('fsSugScan').addEventListener('click', function () { api('POST', 'Suggestions/Scan', { Force: false }).then(function () { setTimeout(function () { loadSuggest(false); }, 800); }); });
+        el('fsSugScan').addEventListener('click', function () { api('POST', 'Suggestions/Scan', { Search: false }).then(function () { setTimeout(function () { loadSuggest(false); }, 800); }); });
+        el('fsSugSearch').addEventListener('click', function () {
+            if (!confirm('Hledat lepší a chybějící verze na Fastshare? Jde to po stropu a v okně hledání z Nastavení, nedávno prohledané se přeskočí.')) return;
+            api('POST', 'Suggestions/Scan', { Search: true }).then(function () { setTimeout(function () { loadSuggest(false); }, 800); });
+        });
         el('fsSugScanAll').addEventListener('click', function () {
             if (!confirm('Hledat lepší verzi znovu u všech filmů pod cílovou kvalitou? U velké knihovny to trvá desítky minut (běží na pozadí).')) return;
-            api('POST', 'Suggestions/Scan', { Force: true }).then(function () { setTimeout(function () { loadSuggest(false); }, 800); });
+            api('POST', 'Suggestions/Scan', { Search: true, Force: true }).then(function () { setTimeout(function () { loadSuggest(false); }, 800); });
         });
         el('fsSugSort').addEventListener('change', renderSugList);
         el('fsSugOnlyCand').addEventListener('change', renderSugList);

@@ -12,6 +12,11 @@ rovnou do knihovny filmů a seriálů. Běží celý uvnitř Jellyfinu — žád
   opravdu soubor (Fastshare bez přihlášení vrací prázdnou odpověď).
 - **⛔ STOP** v hlavičce: okamžitě zastaví všechna stahování a jakékoli spojení na Fastshare (kontrola, hlídač, ruční
   hledání, přihlášení), dokud ho nepovolíš — pro jistotu při podezření na ban. Stažené části se po povolení navážou.
+- **Navržené**: 📂 *Projít knihovnu* = jen soubory na disku (duplicity, bez metadat, čísla dílů, filmy v seriálech, chybějící
+  díly podle TMDb), na Fastshare se nic nehledá; 🔎 *Hledat verze na Fastshare* = totéž a pak hledání lepších a chybějících
+  verzí po stropu a v okně. Rozběhnuté hledání průchod knihovnou nezastaví ani nezopakuje.
+  Díly se ukládají vždy přímo do složky seriálu nebo do jeho složky řady (`Seriál/Season 05`) — z hlubší složky
+  (`Seriál/Všechny série/1.Serie/Season 05`) by je Jellyfin očísloval podle vnější složky jako 1. řadu.
 - **Fronta**: filmy před seriály, díly seriálu pohromadě (S01E01 → …), ⚡ přednost před vším; výběr víc položek
   (klepnutí / Ctrl, Shift rozsah, hlavička seriálu = celý seriál) a hromadně ⚡, nahoru, na konec, odebrat; nahoře
   přehled seriálů ve frontě (kolik dílů se vylepšuje na vyšší kvalitu, kolik chybějících). „⚡ Stahovat teď (mimo

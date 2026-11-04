@@ -43,8 +43,12 @@ public sealed class LibraryAdvisor : BackgroundService
 
     public AdvisorStatus Status { get; } = new();
 
-    /// <summary>Spustí kontrolu hned (tlačítko „Projít knihovnu"). `force` = hledat lepší verze i u nedávno kontrolovaných.</summary>
-    public bool Start(bool force)
+    /// <summary>
+    /// Spustí kontrolu hned. `localOnly` = jen projít soubory v knihovně (duplicity, bez metadat, čísla dílů) —
+    /// na Fastshare se nic nehledá („📂 Projít knihovnu"). Jinak i hledání lepších verzí („🔎 Hledat verze na Fastshare"),
+    /// `force` = i u nedávno prohledaných.
+    /// </summary>
+    public bool Start(bool force, bool localOnly = false)
     {
         if (Status.Running)
         {
@@ -52,6 +56,7 @@ public sealed class LibraryAdvisor : BackgroundService
         }
 
         _forceNext = force;
+        _localNext = localOnly;
         try
         {
             _trigger.Release();
@@ -99,6 +104,13 @@ public sealed class LibraryAdvisor : BackgroundService
 
     private volatile bool _forceNext;
 
+    private volatile bool _localNext;
+
+    /// <summary>Běží jen průchod knihovnou (bez Fastshare).</summary>
+    public bool RunningLocalOnly => Status.Running && _runLocal;
+
+    private volatile bool _runLocal;
+
     /// <summary>Kořeny knihoven Jellyfinu — mimo ně se nikdy nic nemaže.</summary>
     public IReadOnlyCollection<string> LibraryRoots() =>
         _library.GetVirtualFolders().SelectMany(f => f.Locations ?? Array.Empty<string>()).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
@@ -129,12 +141,16 @@ public sealed class LibraryAdvisor : BackgroundService
                 _runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 try
                 {
-                    await RunAsync(cfg, _forceNext, _runCts.Token).ConfigureAwait(false);
+                    _runLocal = _localNext && !due && !(_state.Suggestions.RunPending && !manual);
+                    await RunAsync(cfg, _forceNext, _runLocal, _runCts.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
                     Status.LastResult = "Kontrola zastavena";
-                    _state.Suggestions.SetLastRun("zastaveno uživatelem");
+                    if (!_runLocal)
+                    {
+                        _state.Suggestions.SetLastRun("zastaveno uživatelem"); // průchod knihovnou nesmí zrušit rozjeté hledání ani termín
+                    }
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
@@ -146,6 +162,8 @@ public sealed class LibraryAdvisor : BackgroundService
                     Status.Running = false;
                     Status.Phase = null;
                     _forceNext = false;
+                    _localNext = false;
+                    _runLocal = false;
                     _runCts.Dispose();
                     _runCts = null;
                 }
@@ -182,11 +200,22 @@ public sealed class LibraryAdvisor : BackgroundService
         public List<LibraryVersion> Versions { get; } = new();
     }
 
-    private async Task RunAsync(PluginConfiguration cfg, bool force, CancellationToken ct)
+    private async Task RunAsync(PluginConfiguration cfg, bool force, bool localOnly, CancellationToken ct)
     {
-        _state.Suggestions.RunPending = true;
-        _seriesSearch.Clear();
-        _seriesFetched.Clear();
+        if (!localOnly)
+        {
+            _state.Suggestions.RunPending = true;
+        }
+
+        // Výsledky hledání seriálů držet i přes restart kontroly (změna nastavení, „Hledat teď", nový průchod knihovnou) —
+        // jinak by se rozdělaný seriál hledal na Fastshare znovu
+        if (force || DateTime.UtcNow - _seriesSearchAt > TimeSpan.FromHours(12))
+        {
+            _seriesSearch.Clear();
+            _seriesFetched.Clear();
+            _seriesSearchAt = DateTime.UtcNow;
+        }
+
         Status.Running = true;
         Status.Done = 0;
         Status.Phase = "Načítám filmy z knihovny";
@@ -386,6 +415,18 @@ public sealed class LibraryAdvisor : BackgroundService
         // hledání lepších verzí poběží ještě dny
         _state.Suggestions.Merge(found, new[] { "identify", "duplicate", "episode", "missing", "misplaced", "tomovies" });
         ResolveQueued();
+        if (localOnly)
+        {
+            var local = string.Create(
+                CultureInfo.InvariantCulture,
+                $"Knihovna prošlá (bez Fastshare): {movies.Count} filmů — {found.Count(f => f.Kind == "duplicate")} duplicit, {found.Count(f => f.Kind == "identify")} bez metadat; "
+                + $"{_state.Suggestions.Series.Count} seriálů — {found.Count(f => f.Kind == "episode")} dílů k řešení");
+            Status.LastResult = local;
+            Status.LastRunUtc = DateTime.UtcNow; // jen v paměti — termín hledání na Fastshare (SuggestionState.LastRunUtc) se nehýbe
+            Status.Phase = null;
+            _logger.LogInformation("Fastshare: {Summary}", local);
+            return;
+        }
 
         // Pořadí: duplicity filmů → díly seriálů → lepší verze filmů; v rámci skupiny nejdéle nehledané
         var recheck = TimeSpan.FromDays(Math.Max(1, cfg.SuggestRecheckDays));
@@ -1053,27 +1094,42 @@ public sealed class LibraryAdvisor : BackgroundService
     }
 
     /// <summary>Složka řady v knihovně: kde leží jiné díly téže řady, jinak vedle ostatních řad, jinak složka seriálu.</summary>
-    private static string? SeasonDir(List<(Episode Ep, List<LibraryVersion> Versions)> eps, int season, BaseItem? seriesItem)
+    /// <summary>
+    /// Složka pro díl řady `season`: vedle dílů téže řady, které Jellyfin čísluje správně a leží přímo ve složce seriálu
+    /// nebo v jeho složce řady; jinak „Seriál/Season NN". Nikdy ne do hlubší složky (…/1.Serie/Season 05 = pro Jellyfin S01).
+    /// </summary>
+    private string? SeasonDir(List<(Episode Ep, List<LibraryVersion> Versions)> eps, int season, BaseItem? seriesItem)
     {
-        var same = eps.FirstOrDefault(x => x.Ep.ParentIndexNumber == season && x.Versions.Count > 0);
-        if (same.Ep != null)
+        var any = eps.SelectMany(x => x.Versions).Select(v => v.Path).FirstOrDefault();
+        var series = !string.IsNullOrEmpty(seriesItem?.Path) && Directory.Exists(seriesItem.Path)
+            ? seriesItem.Path
+            : any != null ? LibraryFiles.SeriesFolder(any, LibraryRoots()) : null;
+        if (series == null)
         {
-            return Path.GetDirectoryName(same.Versions[0].Path);
+            return null;
         }
 
-        var seasonName = string.Create(CultureInfo.InvariantCulture, $"Season {season:D2}");
-        var any = eps.FirstOrDefault(x => x.Versions.Count > 0);
-        if (any.Ep != null)
+        var root = Path.GetFullPath(series).TrimEnd(Path.DirectorySeparatorChar);
+        var preferred = eps
+            .Where(x => x.Ep.ParentIndexNumber == season)
+            .SelectMany(x => x.Versions.Where(v => v.Suspect == null))
+            .Select(v => Path.GetDirectoryName(v.Path)!)
+            .FirstOrDefault(d => d == root || Path.GetDirectoryName(d) == root);
+        IEnumerable<string> children;
+        try
         {
-            var dir = Path.GetDirectoryName(any.Versions[0].Path)!;
-            var parent = Path.GetFileName(dir).StartsWith("Season", StringComparison.OrdinalIgnoreCase) || Path.GetFileName(dir).StartsWith("Série", StringComparison.OrdinalIgnoreCase)
-                ? Path.GetDirectoryName(dir)!
-                : dir;
-            return Path.Combine(parent, seasonName);
+            children = Directory.GetDirectories(root);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            children = Array.Empty<string>();
         }
 
-        return string.IsNullOrEmpty(seriesItem?.Path) ? null : Path.Combine(seriesItem.Path, seasonName);
+        return LibraryFiles.SeasonDir(root, season, preferred, children);
     }
+
+    /// <summary>Je složka seriálem v Jellyfinu? (Worker podle toho opravuje cílovou složku dílu.)</summary>
+    public bool IsSeriesFolder(string path) => _library.FindByPath(path, true) is Series;
 
     /// <summary>Díl v cílové kvalitě: „Název S01E02" (český, pak původní název seriálu).</summary>
     // Hledání po seriálech: „Simpsonovi" jednou (pár stránek po 200), z výsledků se vyberou všechny díly —
@@ -1082,6 +1138,7 @@ public sealed class LibraryAdvisor : BackgroundService
     private const int SeriesSearchPages = 5;
     private readonly Dictionary<string, (List<FsFile> Files, bool Truncated)> _seriesSearch = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _seriesFetched = new(StringComparer.Ordinal);
+    private DateTime _seriesSearchAt = DateTime.MinValue;
 
     /// <summary>Hledání seriálu podle názvu jednou za kontrolu (pár stránek), sdílené všemi díly.</summary>
     private async Task<(List<FsFile> Files, bool Truncated)> SeriesSearchAsync(string seriesId, string title, PluginConfiguration cfg, CancellationToken ct)
